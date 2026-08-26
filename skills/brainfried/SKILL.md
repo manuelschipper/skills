@@ -26,8 +26,7 @@ Serve exactly one item per turn, in this shape:
 - The point, in one plain sentence.
 - The smallest view that carries the evidence: a quote for exact wording, a table for
   comparison, a diff for what changes, an indented tree for structure, pseudocode for
-  logic, a sequence or flow diagram for interaction, a focused HTML page when the point is
-  visual or too dense for text. Prose alone only when the item has no structure to show.
+  logic, a sequence or flow diagram for interaction. Prose alone only when the item has no structure to show.
 - Your recommendation, visibly separate from the source, when the item calls for judgment.
 - One prompt. Then stop.
 
