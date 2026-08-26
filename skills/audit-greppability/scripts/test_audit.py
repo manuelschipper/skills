@@ -181,7 +181,7 @@ class AuditFlow(unittest.TestCase):
         (self.work / "packets.json").write_text(json.dumps(packets))
         properties = json.loads((self.work / "inventory.json").read_text())["properties"]
         clean = [p for p in properties if p not in ("Use distinctive domain names", "Make paths and exports say where code lives")]
-        narrative = {"verdict": "Names are generic.", "method": "1 shard, sequential.",
+        narrative = {"verdict": "Names are generic.", "method": "1 shard | sequential.",
                      "property_checks": {p: "checked in every file read; no violation" for p in clean[1:]}}
         (self.work / "narrative.json").write_text(json.dumps(narrative))
         out = run("measure", "--work", str(self.work))
@@ -206,20 +206,38 @@ class AuditFlow(unittest.TestCase):
         self.assertEqual([p["id"] for p in ledger["packets"]], ["P-01", "P-02"])
         self.assertEqual(ledger["trials"][0]["reach"]["absence"]["mark"], "-")
         self.assertEqual(ledger["measure_problems"], [])
-        report = self.work / "audit.txt"
-        out = run("render", "--work", str(self.work), "--out", str(report), "--json", str(self.work / "audit.json"))
+        report = self.work / "audit.md"
+        out = run("render", "--work", str(self.work), "--out", str(report))
         text = report.read_text()
         text.encode("ascii")
-        for section in ("1. VERDICT", "2. MAP", "3. COVERAGE", "4. HEAT GRID", "5. PROPERTY LEDGER", "6. SEARCH REACH",
-                        "7. FINDINGS", "8. WORK PACKETS", "9. HANDOFF", "10. LEDGER"):
+        for section in ("## 1. Verdict", "## 2. Repository map", "## 3. Coverage", "## 4. Heat grid",
+                        "## 5. Property ledger", "## 6. Search reach", "## 7. Findings",
+                        "## 8. Work packets", "## 9. Handoff", "## 10. Reconciliation ledger"):
             self.assertIn(section, text)
-        self.assertIn("F-001  HIGH", text)
+        for finding_id in ids:
+            self.assertIn(f"### {finding_id} -", text)
+        self.assertIn("### P-01 -", text)
+        self.assertIn("### P-02 -", text)
+        self.assertIn("### F-001 - HIGH", text)
+        self.assertIn("star re-export hides names", text)
+        self.assertIn("proof", text)
         self.assertIn("README.md  (uncovered", text)
         self.assertIn("scale: one # =", text)
-        self.assertIn("Coverage   : INCOMPLETE, 1 uncovered", text)
+        self.assertIn("**Coverage:** INCOMPLETE: 1 uncovered", text)
         self.assertIn("incomplete: 1 uncovered", out)
         self.assertIn("git grep -n ' as ' -- '*.ts' = 0", text)
+        self.assertIn("1 shard \\| sequential.", text)
         self.assertNotIn("UNVERIFIED", text)
+        self.assertNotIn("audit.json", text)
+        self.assertIn("report:", out)
+        self.assertNotIn("data:", out)
+        in_fence = False
+        for line in text.splitlines():
+            if line.startswith("```"):
+                in_fence = not in_fence
+            elif in_fence:
+                self.assertLessEqual(len(line), 100, line)
+        self.assertFalse(in_fence)
         audit = json.loads((self.work / "audit.json").read_text())
         self.assertEqual([f["id"] for f in audit["findings"]], ids)
         self.assertEqual(len(audit["dropped"]), 5)

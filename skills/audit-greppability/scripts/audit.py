@@ -723,9 +723,9 @@ def property_ledger(ledger, properties, narrative):
 
 
 def reach_section(trials):
-    out = ["SEARCH REACH   [x] reached (path in audit.json)  [ ] not reached  [-] n/a  [?] path missing"]
+    out = ["SEARCH REACH   [x] reached  [ ] not reached  [-] n/a  [?] path missing"]
     if not trials:
-        return out[0] + "\n  no concepts recorded in vocabulary.json"
+        return out[0] + "\n  no vocabulary concepts recorded"
     out.append(f"  {'concept':24} {'spellings':30} owner wire  cntr  test  absn  {'hits':>6}")
     keys = ("owner", "wiring", "contract", "tests", "absence")
     totals = Counter()
@@ -736,6 +736,9 @@ def reach_section(trials):
                 totals[k + "_n"] += 1
                 totals[k] += t["reach"][k]["mark"] == "x"
         out.append(f"  {t['concept'][:24]:24} {', '.join(t['spellings'])[:30]:30} {marks}  {fmt(t['hits']):>6}")
+        proofs = "; ".join(f"{key}={t['reach'][key]['path']}" for key in keys if t["reach"][key]["path"])
+        if proofs:
+            out.append(field("proof", proofs, gutter=4))
     out.append("  reached: " + "  ".join(f"{k} {totals[k]}/{totals[k + '_n']}" for k in keys if totals[k + "_n"]))
     out.append("  hits = git grep -nw count of every spelling across inventoried files")
     return "\n".join(out)
@@ -743,8 +746,9 @@ def reach_section(trials):
 
 def card(finding, packet_of):
     f = finding
-    head = f"{f['id']}  {f['severity']:4}  {f['property']}"
-    out = [head + (f"   packet {packet_of[f['id']]}" if f["id"] in packet_of else ""), "-" * len(head)]
+    out = []
+    if f["id"] in packet_of:
+        out.append(f"  packet    {packet_of[f['id']]}")
     out.append(f"  where     {f['path']}:{f['line']}")
     for line in str(f["evidence"]).splitlines():
         out.append(f"    | {ascii_safe(line.rstrip())}")
@@ -755,10 +759,8 @@ def card(finding, packet_of):
     if blast:
         by_class = ", ".join(f"{k} {v}" for k, v in sorted(blast["by_class"].items()))
         out.append(f"  blast     `{blast['symbol']}`: {blast['hits']} hits in {blast['files']} files ({by_class or 'none'})")
-        for hit in blast["paths"][:6]:
+        for hit in blast["paths"]:
             out.append(f"              {hit}")
-        if len(blast["paths"]) > 6:
-            out.append(f"              +{len(blast['paths']) - 6} more in audit.json")
         if "new_symbol" in blast:
             out.append(f"  new name  `{blast['new_symbol']}`: {blast['new_symbol_hits']} existing hits"
                        + (" (free)" if blast["new_symbol_hits"] == 0 else " (collision, choose another)"))
@@ -771,41 +773,34 @@ def card(finding, packet_of):
             out.append(field("", f"- {option}"))
     for index, check in enumerate(f.get("accept", [])):
         argv = " ".join(check["argv"])
-        out.append(f"  {'accept' if index == 0 else '      '}    {argv:48} -> {check['expect']}")
+        out.append(field("accept" if index == 0 else "", f"{argv} -> {check['expect']}"))
     return "\n".join(ascii_safe(line) for line in out)
-
-
-def one_liner(finding, packet_of):
-    f = finding
-    action = f"recipe: {f['recipe'][0]}" if f.get("recipe") else f"decision: {f['decision'].get('question', '')}"
-    accept = f.get("accept") or []
-    tail = f"; accept: {' '.join(accept[0]['argv'])} -> {accept[0]['expect']}" if accept else ""
-    first = f"{f['id']}  {f['severity']:4} {f['property'][:40]:40} {f['path']}:{f['line']}" + (f"  {packet_of[f['id']]}" if f["id"] in packet_of else "")
-    return ascii_safe(first) + "\n" + field("", f"{action}{tail}", gutter=7, label_width=0).replace("        ", "       ", 1)
 
 
 def packets_section(ledger):
     packets = ledger.get("packets", [])
-    out = ["WORK PACKETS  in dependency order; a packet is done when every accept line holds"]
+    out = ["Packets appear in dependency order. A packet is done when every acceptance line holds."]
     if not packets:
-        return out[0] + "\n  none recorded in packets.json"
+        return out[0] + "\n\nNone recorded."
     ids = {f["id"]: f for f in ledger["findings"]}
     for packet in packets:
         sev = Counter(ids[fid]["severity"] for fid in packet["findings"] if fid in ids)
-        out.append("")
-        out.append(f"  {packet['id']}  {packet['title'][:56]:56} {len(packet['findings']):3d} findings"
-                   f"  files {len(packet['files']):3d}  tests {len(packet['tests']):3d}")
-        out.append(f"        {' '.join(packet['findings'])}  (HIGH {sev['HIGH']}, MED {sev['MED']}, LOW {sev['LOW']})")
+        card_lines = [f"  findings  {' '.join(packet['findings'])}  (HIGH {sev['HIGH']}, MED {sev['MED']}, LOW {sev['LOW']})",
+                      f"  scope     {len(packet['files'])} files, {len(packet['tests'])} tests"]
         if packet.get("after"):
-            out.append(f"        after: {', '.join(packet['after'])}")
+            card_lines.append(f"  after     {', '.join(packet['after'])}")
         if packet.get("note"):
-            out.append(field("", packet["note"], gutter=8, label_width=0).replace("         ", "        ", 1))
+            card_lines.append(field("note", packet["note"]))
+        if packet.get("files"):
+            card_lines.append(field("files", ", ".join(packet["files"])))
+        if packet.get("tests"):
+            card_lines.append(field("tests", ", ".join(packet["tests"])))
         for index, check in enumerate(packet.get("accept", [])):
-            out.append(f"        {'accept:' if index == 0 else '       '} {' '.join(check['argv']):44} -> {check['expect']}")
+            card_lines.append(field("accept" if index == 0 else "", f"{' '.join(check['argv'])} -> {check['expect']}"))
+        out.append(f"### {packet['id']} - {ascii_safe(packet['title'])}\n\n{markdown_code(chr(10).join(card_lines))}")
     if ledger.get("unassigned_findings"):
-        out.append("")
-        out.append(f"  not in any packet: {' '.join(ledger['unassigned_findings'])}")
-    return "\n".join(ascii_safe(line) for line in out)
+        out.append(f"Not in any packet: {' '.join(ledger['unassigned_findings'])}")
+    return "\n\n".join(out)
 
 
 def appendix(ledger):
@@ -830,12 +825,22 @@ def appendix(ledger):
     out.append(f"  git status changes during the audit: {len(ledger['git_status_delta'])}")
     for line in ledger["git_status_delta"]:
         out.append(f"    {line}")
+    out.append("  file manifest")
+    out.append(f"    {'status':14} {'class':10} {'lines':>8}  path")
+    for f in ledger["files"]:
+        out.append(f"    {f['status'][:14]:14} {f['class'][:10]:10} {fmt(f['lines']):>8}  {f['path']}")
     return "\n".join(ascii_safe(line) for line in out)
 
 
-def titled(prefix, section):
-    title, _, rest = section.partition("\n")
-    return prefix + title, rest
+def markdown_code(text):
+    fence = "```"
+    while fence in text:
+        fence += "`"
+    return f"{fence}text\n{text}\n{fence}"
+
+
+def markdown_cell(text):
+    return " ".join(ascii_safe(text).split()).replace("|", "\\|")
 
 
 def cmd_render(args):
@@ -846,50 +851,48 @@ def cmd_render(args):
     properties = inventory["properties"]
     packet_of = {fid: p["id"] for p in ledger.get("packets", []) for fid in p["findings"]}
     dirty = f"dirty ({len(inventory['dirty'])} entries)" if inventory["dirty"] else "clean"
-    head = [
-        "GREPPABILITY AUDIT",
-        "==================",
-        f"Repository : {Path(inventory['repo']).name}  {inventory['origin'] or inventory['repo']}",
-        f"Revision   : {inventory['head'][:12]}  {inventory['branch']}  {dirty}",
-        f"Scope      : {', '.join(inventory['scope']) if inventory['scope'] else 'whole repository'}",
-        f"Rubric     : greppable, {len(properties)} properties",
-        "Method     : " + wrap(narrative["method"], REPORT_WIDTH - 13, "             ").lstrip(),
-        "Provenance : every count is a row in audit.json; bars and glyphs carry their scale on the same line",
-    ]
     uncovered = sum(f["status"] == "uncovered" for f in ledger["files"])
     pending = sum(f["status"] == "pending" for f in ledger["files"])
     complete = uncovered == 0 and pending == 0
-    head.insert(6, "Coverage   : complete, every hand-written file read in full" if complete else
-                f"Coverage   : INCOMPLETE, {uncovered} uncovered and {pending} pending files (see 10. LEDGER); not a whole-repository audit")
+    coverage = ("Complete: every hand-written file was read in full." if complete else
+                f"INCOMPLETE: {uncovered} uncovered and {pending} pending files. This is not a whole-repository audit; see the ledger.")
+    head = [
+        f"# Greppability audit: {Path(inventory['repo']).name}",
+        "",
+        f"> **Coverage:** {coverage}",
+        "",
+        "| Field | Value |",
+        "| --- | --- |",
+        f"| Repository | `{inventory['origin'] or inventory['repo']}` |",
+        f"| Revision | `{inventory['head'][:12]}` on `{inventory['branch']}`; {dirty} |",
+        f"| Scope | {', '.join(inventory['scope']) if inventory['scope'] else 'whole repository'} |",
+        f"| Rubric | greppable, {len(properties)} properties |",
+        f"| Method | {markdown_cell(narrative['method'])} |",
+        "| Provenance | Every count is derived from reconciled work artifacts; the full file manifest is in the ledger. |",
+    ]
     findings = ledger["findings"]
-    high = [f for f in findings if f["severity"] == "HIGH"]
-    others = [f for f in findings if f["severity"] != "HIGH"]
-    body = []
-    for f in high:
-        body.append(card(f, packet_of))
-        body.append("")
-    if others:
-        body.append("MED and LOW")
-        body.extend(one_liner(f, packet_of) for f in others)
+    body = "\n\n".join(
+        f"### {f['id']} - {f['severity']} - {ascii_safe(f['property'])}\n\n{markdown_code(card(f, packet_of))}"
+        for f in findings
+    ) or "No findings."
     handoff = wrap(
         "Fix in packet order. For each packet: apply every recipe, resolve every decision with the user before "
         "touching it, run the packet's accept lines, then each finding's accept lines. A packet is done when "
-        "all accept lines hold and git status shows only files it lists. Full detail with the same IDs is in "
-        f"{Path(args.json).name} beside this report (findings[].blast.paths, findings[].recipe, packets[].accept).")
+        "all accept lines hold and git status shows only files it lists. This report contains the complete "
+        "evidence, blast paths, repair or decision, and acceptance checks for every finding.")
     sections = [
-        ("1. VERDICT", wrap(narrative["verdict"])),
-        titled("2. ", map_section(ledger)),
-        titled("3. ", coverage_table(inventory, ledger) + "\n\n" + exclusion_table(ledger["files"])),
-        titled("4. ", heat_section(ledger, properties)),
-        titled("5. ", property_ledger(ledger, properties, narrative)),
-        titled("6. ", reach_section(ledger.get("trials", []))),
-        (f"7. FINDINGS  {len(findings)} accepted, {len(ledger['dropped'])} dropped; HIGH as cards, MED and LOW as one-liners",
-         "\n".join(body).rstrip()),
-        titled("8. ", packets_section(ledger)),
-        ("9. HANDOFF", handoff),
-        titled("10. ", appendix(ledger)),
+        ("1. Verdict", wrap(narrative["verdict"]), False),
+        ("2. Repository map", map_section(ledger), True),
+        ("3. Coverage", coverage_table(inventory, ledger) + "\n\n" + exclusion_table(ledger["files"]), True),
+        ("4. Heat grid", heat_section(ledger, properties), True),
+        ("5. Property ledger", property_ledger(ledger, properties, narrative), True),
+        ("6. Search reach", reach_section(ledger.get("trials", [])), True),
+        (f"7. Findings ({len(findings)} accepted, {len(ledger['dropped'])} dropped)", body, False),
+        ("8. Work packets", packets_section(ledger), False),
+        ("9. Handoff", handoff, False),
+        ("10. Reconciliation ledger and file manifest", appendix(ledger), True),
     ]
-    parts = ["\n".join(head)] + [f"{title}\n{'-' * len(title)}\n{text}" for title, text in sections]
+    parts = ["\n".join(head)] + [f"## {title}\n\n{markdown_code(text) if fenced else text}" for title, text, fenced in sections]
     report = "\n\n".join(parts) + "\n"
     report = ascii_safe(report)
     Path(args.out).write_text(report)
@@ -909,11 +912,11 @@ def cmd_render(args):
         "recovered": ledger.get("recovered", []),
         "git_status_delta": ledger["git_status_delta"],
     }
-    dump(args.json, audit)
+    dump(work / "audit.json", audit)
     print(progress_line(ledger))
     if not complete:
         print(f"incomplete: {uncovered} uncovered and {pending} pending files; do not deliver this as a whole-repository audit")
-    print(f"report: {args.out} ({report.count(chr(10))} lines, 7-bit ASCII)  data: {args.json}")
+    print(f"report: {args.out} ({report.count(chr(10))} lines, Markdown with 7-bit ASCII visuals)")
 
 
 # --- main ----------------------------------------------------------------------------------
@@ -946,10 +949,9 @@ def main():
     p.add_argument("--work", required=True)
     p.set_defaults(func=cmd_measure)
 
-    p = sub.add_parser("render", help="write the ASCII report and the same-ID JSON")
+    p = sub.add_parser("render", help="write the detailed Markdown report")
     p.add_argument("--work", required=True)
-    p.add_argument("--out", required=True, help="audit.txt path")
-    p.add_argument("--json", required=True, help="audit.json path")
+    p.add_argument("--out", required=True, help="audit.md path")
     p.set_defaults(func=cmd_render)
 
     args = parser.parse_args()

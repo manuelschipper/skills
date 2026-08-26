@@ -1,9 +1,10 @@
 # Work-directory artifacts
 
 Everything the audit produces lives in one work directory outside the audited repository. The
-script owns `inventory.json`, `shards.json`, `ledger.json`, `audit.txt`, and `audit.json`. Shards
-own `shards/S-*.json` (contract in [shard-prompt.md](shard-prompt.md)). You author the three files
-below; `audit.py measure` validates them and `audit.py render` prints from them.
+script owns `inventory.json`, `shards.json`, `ledger.json`, `audit.md`, and the internal
+`audit.json`. Shards own `shards/S-*.json` (contract in [shard-prompt.md](shard-prompt.md)). You
+author the three files below; `audit.py measure` validates them and `audit.py render` prints the
+durable Markdown from them. `audit.json` is scratch state, not a deliverable.
 
 ## `shards/main.json`
 
@@ -39,7 +40,8 @@ surface does not apply (an absence record for a concept that exists).
 
 `measure` counts `git grep -nw` hits per spelling and lists files whose path contains a spelling;
 the report's reach matrix shows `[x]` for a path that exists, `[ ]` for `null`, `[-]` for `"n/a"`,
-and `[?]` for a path not in the inventory (also listed under problems).
+and `[?]` for a path not in the inventory (also listed under problems). The Markdown prints each
+recorded proof path beneath the matrix.
 
 ## `packets.json`
 

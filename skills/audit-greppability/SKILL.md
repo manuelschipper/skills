@@ -1,6 +1,6 @@
 ---
 name: audit-greppability
-description: "Exhaustive whole-repository greppability audit against the greppable rubric: every hand-written file enumerated, read in full, and reconciled; a 7-bit ASCII evidence report plus same-ID JSON another agent can fix from."
+description: "Exhaustive whole-repository greppability audit against the greppable rubric: every hand-written file enumerated, read in full, and reconciled into one evidence-rich Markdown report."
 disable-model-invocation: true
 ---
 
@@ -18,28 +18,35 @@ measure, render. You do the judging. Run it by absolute path from this skill's d
 
 ## Introduce the audit
 
-Before calling any tool, orient the user in plain language. Explain all of this:
+Before calling any tool, orient the user in plain language. Use one short paragraph that explains:
 
 - Greppability is how easily an agent can find a concept's owner, production wiring, contract,
   tests, and intentional absences by searching the repository's own domain words.
 - This is a deep, read-only audit of the whole repository. Every hand-written file is inventoried
   and read, subagents divide the work when the environment supports them, and the audit may take
   a while.
-- The result is one audit with two synchronized views generated together: a visual ASCII report
-  for a human to read and structured JSON with the same finding and work-packet IDs for another
-  agent to execute. The user is choosing where the audit lives, not which format to generate.
+- The result is one detailed Markdown report that humans can audit and agents can execute. Chat
+  receives a short guided summary, not the full report. The audit may use JSON internally to
+  reconcile evidence, but JSON is not a deliverable or a choice for the user.
+
+Use this shape, adapted to the repository: `I'll run a deep, read-only audit of the whole
+repository. Greppability is how reliably an agent can search from a domain term to its owner,
+wiring, contract, tests, and intentional absences. I'll read every hand-written file, use
+subagents when this environment supports them, and produce one detailed Markdown report; it may
+take a while.`
 
 Then settle storage, in this precedence:
 
 - Any applicable instruction, from the user, the environment, or the runtime, says not to store:
-  say that the visual report will be returned in the reply and nothing will be persisted.
+  say that the detailed Markdown will be returned in the reply and nothing will be persisted.
 - The user named a destination, or the environment instructions name a system of record for
   reports (a known notes molds project, for instance): name that destination and continue.
-- Otherwise ask: `Where should I keep the audit? Name a system of record or path, or say "chat
-  only" for no durable copy.` Then wait for the answer.
+- Otherwise ask: `Where should I store the detailed Markdown audit, or what is this environment's
+  system of record for reports?` Then wait for the answer.
 
-Do not lead with filenames or ask the user to choose between text and JSON. Never guess, derive,
-or create a store. Nothing is written into the audited repository.
+That is the only question. Do not lead with filenames, ask about formats, or ask the user to make
+method choices. Never guess, derive, or create a store. Nothing is written into the audited
+repository.
 
 ## Before reading any code
 
@@ -119,15 +126,16 @@ that supports "clean"; the ledger prints it), and any property that genuinely do
 
 ```
 audit.py measure --work W
-audit.py render --work W --out W/audit.txt --json W/audit.json
+audit.py render --work W --out W/audit.md
 ```
 
 `measure` counts every symbol's blast radius and every concept's hits with `git grep`, checks
 proposed names for collisions, validates packets (unique IDs, argv accept checks), checks the
 property evidence, and orders the packets; it recomputes its problems on every run. `render`
-writes the 7-bit ASCII report (map, coverage bars, heat grid, property ledger, search reach,
-evidence cards, packets, handoff, ledger appendix) and the same-ID JSON. Zero problems, zero
-uncovered, zero pending, and zero unassigned findings in its output, or fix the artifacts and
+writes the detailed Markdown report: an opening verdict, 7-bit ASCII maps, full evidence cards for
+every severity, packets, handoff, and coverage ledger. It also refreshes an internal `audit.json`
+inside `W` for consistency checks; do not deliver or mention that scratch file. Zero problems,
+zero uncovered, zero pending, and zero unassigned findings in its output, or fix the artifacts and
 rerun.
 
 ## 6. Redact, then deliver
@@ -135,17 +143,55 @@ rerun.
 Before anything leaves `W`, inspect both outputs for secrets:
 
 ```
-grep -nEi '(api[_-]?key|secret|token|passw(or)?d|authorization|private key|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{20,})' W/audit.txt W/audit.json
+grep -nEi '(api[_-]?key|secret|token|passw(or)?d|authorization|private key|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{20,})' W/audit.md W/audit.json
 ```
 
 Read every hit. For a real credential or personal datum, trim the evidence in the originating
 shard artifact or narrative to the fragment before the secret (`verify` matches a substring, so a
 shortened quote still verifies), rerun `verify`, `measure`, and `render`, and inspect again. Never
-edit `audit.txt` or `audit.json` by hand; they must stay derivable from the artifacts.
+edit `audit.md` or `audit.json` by hand; they must stay derivable from the artifacts.
 
-Store `audit.txt` and `audit.json` per the settled precedence; in a Markdown store, fence the
-report so alignment survives. Reply with the verdict, the final `coverage:` line, the HIGH count,
-the packet list, and where the files went.
+Store only `audit.md` per the settled precedence. If storage is prohibited, load the Markdown for
+the reply, remove the audit-created `W`, and leave no durable copy.
+
+The normal chat handoff is a calm briefing of roughly 120-200 words, in this order:
+
+1. A one- or two-sentence verdict in plain language, including whether any HIGH findings exist.
+2. At most three priority themes. For each, state the consequence, cite its finding or packet IDs,
+   and include one representative `path:line` from the report. Do not recite every finding.
+3. One coverage receipt: files read versus assigned, properties checked, and search reach for each
+   applicable vocabulary surface (owner, wiring, contract, tests, absence). Name every miss rather
+   than hiding it in a ratio, and include uncovered or pending files.
+4. The first work packet to take and why; mention a dependency only when it changes that choice.
+   Surface every decision that requires the user before an agent can proceed.
+5. The exact record, link, or path containing the detailed Markdown. When verification dropped or
+   recovered anything, state the count and reason class here.
+
+Keep maps, heat grids, complete property rows, full evidence, blast paths, every packet, and the
+reconciliation ledger in the Markdown. Do not paste them into chat or end with a second TLDR. A
+reader should understand the result from chat and verify or execute it from the one report.
+
+Use this shape:
+
+```markdown
+[One- or two-sentence verdict, including the HIGH count.]
+
+The three things that matter most:
+
+- **[Theme]** (`F-NNN`, `P-NN`) - [consequence], evidenced at `path:line`.
+- **[Theme]** (`F-NNN`) - [consequence], evidenced at `path:line`.
+- **[Theme]** (`F-NNN`) - [consequence], evidenced at `path:line`.
+
+Coverage: [read]/[assigned] hand-written files and [checked]/[rubric] properties. Search reaches
+owner [n/n], wiring [n/n], contract [n/n], tests [n/n], and absence [n/n]; [name every miss].
+[uncovered] files are uncovered and [pending] pending.
+
+Start with `P-NN` because [reason]. Your decisions: [finding IDs and questions, or none]. Detailed
+audit: [record, link, or path]. [Dropped/recovered verification note when nonzero.]
+```
+
+Use fewer than three themes when fewer are material. Omit the theme list when there are no
+findings.
 
 ## Progress updates
 
