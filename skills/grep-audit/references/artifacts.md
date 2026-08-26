@@ -15,10 +15,12 @@ dropped as a duplicate.
 
 ## `vocabulary.json`
 
-Canonical concepts and their spellings. Written after the inventory so every shard uses the same
-terms; `reach` is filled after the search trials and each value is a repository-relative path (or
-`path:line`) that proves the search reached that surface, `null` when it did not, `"n/a"` when the
-surface does not apply (an absence record for a concept that exists).
+Canonical concepts and their spellings. The initial file is a seed; after shard reading, every
+`vocabulary_additions` entry must be merged into a concept or spelling, or recorded under
+`rejected`. `documented` is a proof path where documentation or agent guidance names the concept,
+otherwise `null`. `reach` is filled after the search trials: a repository-relative proof path (or
+`path:line`) when reached, `null` when tried and missed, and `"n/a"` when the surface does not
+apply. A concept with any `null` reach value lists the accepted findings that explain the misses.
 
 ```json
 {
@@ -26,22 +28,33 @@ surface does not apply (an absence record for a concept that exists).
     {
       "concept": "organization",
       "spellings": ["organization", "org", "tenant"],
+      "documented": "AGENTS.md:18",
       "reach": {
         "owner": "src/organization/organization-repository.ts",
         "wiring": "src/api/routes/organization.ts:14",
         "contract": null,
         "tests": "tests/organization-access.test.ts",
         "absence": "n/a"
-      }
+      },
+      "findings": ["F-003"]
+    }
+  ],
+  "rejected": [
+    {
+      "concept": "runner",
+      "spellings": ["runner"],
+      "reason": "Generic role word shared by unrelated subsystems."
     }
   ]
 }
 ```
 
-`measure` counts `git grep -nw` hits per spelling and lists files whose path contains a spelling;
-the report's reach matrix shows `[x]` for a path that exists, `[ ]` for `null`, `[-]` for `"n/a"`,
-and `[?]` for a path not in the inventory (also listed under problems). The Markdown prints each
-recorded proof path beneath the matrix.
+`measure` counts case-insensitive fixed-substring hits per spelling, so domain terms inside compound
+identifiers count. It verifies closure of additions, all five reach keys, finding IDs for misses,
+and that each documented or reach proof contains a spelling in its path or near its recorded line.
+The report's reach matrix shows `[x]` for verified proof, `[ ]` for a tried miss, `[-]` for
+`"n/a"`, `[!]` for an untried surface, and `[?]` for invalid proof. The Markdown prints each proof
+path and the rejected candidates in its reconciliation ledger.
 
 ## `packets.json`
 

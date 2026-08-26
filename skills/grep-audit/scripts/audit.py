@@ -21,6 +21,7 @@ BOUNDARY_CLASSES = ("generated", "vendored")
 LISTED_CLASSES = ("data", "binary")
 CLASS_ORDER = READ_CLASSES + BOUNDARY_CLASSES + LISTED_CLASSES
 SEVERITIES = ("HIGH", "MED", "LOW")
+REACH_SURFACES = ("owner", "wiring", "contract", "tests", "absence")
 SEVERITY_DEFINITIONS = {
     "HIGH": "A domain search cannot reach the concept's owner or contract.",
     "MED": "Search reaches the owner or contract only after extra reads or context reconstruction.",
@@ -62,6 +63,13 @@ MAX_SHARD_FILES = 400
 REPORT_WIDTH = 100
 CARD_WIDTH = 78
 SEVERITY_CREDIT = {"HIGH": 0.0, "MED": 0.5, "LOW": 0.75}
+GREP_WORDMARK = """                        ██████  ██████  ███████ ██████
+                       ██       ██   ██ ██      ██   ██
+                       ██  ███  ██████  █████   ██████
+                       ██   ██  ██   ██ ██      ██
+                        ██████  ██   ██ ███████ ██
+
+                              GREPPABILITY AUDIT"""
 
 VENDOR_SEGMENTS = {"vendor", "vendored", "third_party", "third-party", "node_modules", "extern", "external"}
 GENERATED_SEGMENTS = {"generated", "__generated__", "gen", "dist", "build"}
@@ -330,17 +338,37 @@ def check_accept(checks):
     return None
 
 
+def collect_records(target, records, shard, label, problems):
+    if not isinstance(records, list):
+        problems.append(f"{shard}: {label} must be a list")
+        return
+    for index, record in enumerate(records, 1):
+        if not isinstance(record, dict):
+            problems.append(f"{shard}: {label} entry {index} must be an object")
+            continue
+        target.append({**record, "shard": shard})
+
+
 def check_finding(finding, index, inventory, repo, properties):
+    if not isinstance(finding, dict):
+        return f"finding {index}: must be an object"
     required = ("property", "severity", "path", "line", "evidence", "observation")
     missing = [k for k in required if k not in finding]
     if missing:
         return f"finding {index}: missing {', '.join(missing)}"
+    if not isinstance(finding["property"], str) or not finding["property"].strip():
+        return f"finding {index}: property must be a non-empty string"
+    if not isinstance(finding["observation"], str) or not finding["observation"].strip():
+        return f"finding {index}: observation must be a non-empty string"
     if finding["property"].strip() not in properties:
         return f"finding {index}: property is not a rubric heading: {finding['property']!r}"
     if finding["severity"] not in SEVERITIES:
         return f"finding {index}: severity must be one of {SEVERITIES}"
-    if bool(finding.get("recipe")) == bool(finding.get("decision")):
+    recipe = finding.get("recipe")
+    if bool(recipe) == bool(finding.get("decision")):
         return f"finding {index}: needs exactly one of recipe (list of steps) or decision (question and options)"
+    if recipe and (not isinstance(recipe, list) or not all(isinstance(step, str) and step.strip() for step in recipe)):
+        return f"finding {index}: recipe must be a list of non-empty steps"
     if finding.get("decision"):
         decision = finding["decision"]
         if not isinstance(decision, dict) or not isinstance(decision.get("question"), str) or not decision["question"].strip():
@@ -354,6 +382,8 @@ def check_finding(finding, index, inventory, repo, properties):
         return f"finding {index}: needs accept checks or a symbol to derive them from"
     if finding.get("accept") and (error := check_accept(finding["accept"])):
         return f"finding {index}: {error}"
+    if not isinstance(finding["path"], str) or not finding["path"].strip():
+        return f"finding {index}: path must be a non-empty string"
     if finding["path"] not in inventory:
         return f"finding {index}: {finding['path']} is not in the inventory"
     file = repo / finding["path"]
@@ -363,9 +393,13 @@ def check_finding(finding, index, inventory, repo, properties):
     line = finding["line"]
     if not isinstance(line, int) or line < 1 or line > len(lines):
         return f"finding {index}: {finding['path']}:{line} is out of range (1..{len(lines)})"
-    quote = next((q.strip() for q in str(finding["evidence"]).splitlines() if q.strip()), "")
-    window = lines[max(0, line - 3): line + 2]
-    if not quote or not any(quote in candidate for candidate in window):
+    if not isinstance(finding["evidence"], str) or not finding["evidence"].strip():
+        return f"finding {index}: evidence must be a non-empty string"
+    quote = [part.strip() for part in finding["evidence"].strip().splitlines()]
+    if len(quote) > 3:
+        return f"finding {index}: evidence must be at most 3 lines"
+    starts = range(max(0, line - 3), min(len(lines) - len(quote) + 1, line + 2))
+    if not any([part.strip() for part in lines[start:start + len(quote)]] == quote for start in starts):
         return f"finding {index}: evidence not found at {finding['path']}:{line} (+/-2 lines)"
     return None
 
@@ -423,11 +457,17 @@ def cmd_verify(args):
         for index, finding in enumerate(data.get("findings", []), 1):
             error = check_finding(finding, index, by_path, repo, properties)
             if error:
-                dropped.append({"shard": shard["id"], "reason": error, "path": finding.get("path"), "line": finding.get("line")})
+                dropped.append({
+                    "shard": shard["id"], "reason": error,
+                    "path": finding.get("path") if isinstance(finding, dict) else None,
+                    "line": finding.get("line") if isinstance(finding, dict) else None,
+                })
             else:
                 findings.append({**finding, "property": finding["property"].strip(), "shard": shard["id"]})
-        leads.extend({**lead, "shard": shard["id"]} for lead in data.get("cross_shard_leads", []))
-        vocab_additions.extend({**v, "shard": shard["id"]} for v in data.get("vocabulary_additions", []))
+        collect_records(leads, data.get("cross_shard_leads", []), shard["id"], "cross_shard_leads", problems)
+        collect_records(
+            vocab_additions, data.get("vocabulary_additions", []), shard["id"], "vocabulary_additions", problems
+        )
         shard["status"] = "reconciled" if not remainder else "partial"
     main_artifact = work / "shards" / "main.json"
     if main_artifact.exists():
@@ -439,9 +479,15 @@ def cmd_verify(args):
         for index, finding in enumerate(data.get("findings", []), 1):
             error = check_finding(finding, index, by_path, repo, properties)
             if error:
-                dropped.append({"shard": "main", "reason": error, "path": finding.get("path"), "line": finding.get("line")})
+                dropped.append({
+                    "shard": "main", "reason": error,
+                    "path": finding.get("path") if isinstance(finding, dict) else None,
+                    "line": finding.get("line") if isinstance(finding, dict) else None,
+                })
             else:
                 findings.append({**finding, "property": finding["property"].strip(), "shard": "main"})
+        collect_records(leads, data.get("cross_shard_leads", []), "main", "cross_shard_leads", problems)
+        collect_records(vocab_additions, data.get("vocabulary_additions", []), "main", "vocabulary_additions", problems)
     seen = {}
     unique = []
     for finding in findings:
@@ -521,14 +567,193 @@ def progress_line(ledger):
 # --- measure -------------------------------------------------------------------------------
 
 
-def grep_hits(repo, term, by_path):
-    out = git(repo, "grep", "-nwI", "--", term)
+def grep_hits(repo, term, by_path, whole_word=True):
+    pattern = re.compile(rf"(?<![0-9A-Za-z_]){re.escape(term)}(?![0-9A-Za-z_])") if whole_word else None
+    needle = term.casefold()
     hits = []
-    for line in out.splitlines():
-        path, _, rest = line.partition(":")
-        if path in by_path:
-            hits.append(f"{path}:{rest.partition(':')[0]}")
+    for path in by_path:
+        content = (repo / path).read_bytes()
+        if b"\0" in content:
+            continue
+        for line_number, line in enumerate(content.decode("utf-8", "replace").splitlines(), 1):
+            matched = pattern.search(line) if whole_word else needle in line.casefold()
+            if matched:
+                hits.append(f"{path}:{line_number}")
     return hits
+
+
+def proof_location(value):
+    path, separator, suffix = value.rpartition(":")
+    return (path, int(suffix)) if separator and suffix.isdigit() else (value, None)
+
+
+def proof_error(repo, value, spellings, by_path):
+    if not isinstance(value, str) or not value.strip():
+        return "proof must be a non-empty path or path:line"
+    path, line = proof_location(value)
+    if path not in by_path:
+        return f"path not in inventory: {value}"
+    lines = (repo / path).read_text(errors="replace").splitlines()
+    if line is not None and not 1 <= line <= len(lines):
+        return f"line out of range: {value}"
+    content = "\n".join(lines[max(0, line - 3):line + 2] if line is not None else lines)
+    searchable = f"{path}\n{content}".casefold()
+    if not any(spelling.casefold() in searchable for spelling in spellings):
+        return f"proof contains none of its spellings: {value}"
+    return None
+
+
+def measure_vocabulary(work, ledger, repo, by_path, finding_ids, problems):
+    vocabulary = load(work / "vocabulary.json", {})
+    concepts = vocabulary.get("concepts")
+    if not isinstance(concepts, list):
+        problems.append("vocabulary: concepts must be a list")
+        concepts = []
+    rejected = vocabulary.get("rejected")
+    if not isinstance(rejected, list):
+        problems.append("vocabulary: rejected must be a list")
+        rejected = []
+
+    known_terms = set()
+    valid_concepts = []
+    for index, concept in enumerate(concepts, 1):
+        label = f"concept {index}"
+        if not isinstance(concept, dict):
+            problems.append(f"vocabulary: {label} must be an object")
+            continue
+        name = concept.get("concept")
+        spellings = concept.get("spellings")
+        if not isinstance(name, str) or not name.strip():
+            problems.append(f"vocabulary: {label} needs a non-empty concept")
+            continue
+        label = name
+        if not isinstance(spellings, list) or not spellings or not all(
+                isinstance(spelling, str) and spelling.strip() for spelling in spellings):
+            problems.append(f"vocabulary: {label} needs non-empty spellings")
+            continue
+        known_terms.update(term.casefold() for term in [name, *spellings])
+        documented = concept.get("documented")
+        if "documented" not in concept:
+            problems.append(f"vocabulary: {label} has no documented provenance")
+            documented_mark = "!"
+            documented_path = None
+        elif documented is None:
+            documented_mark = " "
+            documented_path = None
+        elif error := proof_error(repo, documented, spellings, by_path):
+            problems.append(f"vocabulary: {label} documented {error}")
+            documented_mark = "?"
+            documented_path = documented if isinstance(documented, str) else None
+        else:
+            documented_mark = "x"
+            documented_path = documented
+        valid_concepts.append((concept, documented_mark, documented_path))
+
+    rejected_terms = set()
+    valid_rejected = []
+    for index, rejection in enumerate(rejected, 1):
+        label = f"rejected entry {index}"
+        if not isinstance(rejection, dict):
+            problems.append(f"vocabulary: {label} must be an object")
+            continue
+        name = rejection.get("concept")
+        spellings = rejection.get("spellings")
+        reason = rejection.get("reason")
+        if not isinstance(name, str) or not name.strip():
+            problems.append(f"vocabulary: {label} needs a non-empty concept")
+            continue
+        if not isinstance(spellings, list) or not spellings or not all(
+                isinstance(spelling, str) and spelling.strip() for spelling in spellings):
+            problems.append(f"vocabulary: rejected {name} needs non-empty spellings")
+            continue
+        if not isinstance(reason, str) or not reason.strip():
+            problems.append(f"vocabulary: rejected {name} needs a reason")
+            continue
+        rejected_terms.update(term.casefold() for term in [name, *spellings])
+        valid_rejected.append(rejection)
+
+    closed_terms = known_terms | rejected_terms
+    for index, addition in enumerate(ledger.get("vocabulary_additions", []), 1):
+        label = f"addition {index}"
+        if not isinstance(addition, dict):
+            problems.append(f"vocabulary: {label} must be an object")
+            continue
+        name = addition.get("concept")
+        spellings = addition.get("spellings")
+        paths = addition.get("paths")
+        if not isinstance(name, str) or not name.strip():
+            problems.append(f"vocabulary: {label} needs a non-empty concept")
+            continue
+        if not isinstance(spellings, list) or not spellings or not all(
+                isinstance(spelling, str) and spelling.strip() for spelling in spellings):
+            problems.append(f"vocabulary: addition {name} needs non-empty spellings")
+            continue
+        if not isinstance(paths, list) or not paths or not all(isinstance(path, str) and path.strip() for path in paths):
+            problems.append(f"vocabulary: addition {name} needs defining paths")
+        else:
+            for value in paths:
+                path, _ = proof_location(value)
+                if path not in by_path:
+                    problems.append(f"vocabulary: addition {name} path not in inventory: {value}")
+        addition_terms = list(dict.fromkeys([name, *spellings]))
+        unresolved = [term for term in addition_terms if term.casefold() not in closed_terms]
+        if unresolved:
+            problems.append(f"vocabulary: unresolved addition {name}: {', '.join(unresolved)}")
+
+    trials = []
+    for concept, documented_mark, documented_path in valid_concepts:
+        name = concept["concept"]
+        spellings = concept["spellings"]
+        per_spelling = {spelling: grep_hits(repo, spelling, by_path, whole_word=False) for spelling in spellings}
+        raw_reach = concept.get("reach")
+        if not isinstance(raw_reach, dict):
+            problems.append(f"vocabulary: {name} not trialed: reach must contain all five surfaces")
+            raw_reach = {}
+        missing_keys = [key for key in REACH_SURFACES if key not in raw_reach]
+        if missing_keys:
+            problems.append(f"vocabulary: {name} not trialed: missing reach {', '.join(missing_keys)}")
+        reach = {}
+        misses = []
+        for key in REACH_SURFACES:
+            if key not in raw_reach:
+                reach[key] = {"mark": "!", "path": None}
+                continue
+            value = raw_reach[key]
+            if value is None:
+                reach[key] = {"mark": " ", "path": None}
+                misses.append(key)
+            elif value == "n/a":
+                reach[key] = {"mark": "-", "path": None}
+            elif error := proof_error(repo, value, spellings, by_path):
+                reach[key] = {"mark": "?", "path": value if isinstance(value, str) else None}
+                problems.append(f"vocabulary: {name} {key} {error}")
+            else:
+                reach[key] = {"mark": "x", "path": value}
+        links = concept.get("findings", [])
+        if not isinstance(links, list) or not all(isinstance(finding_id, str) for finding_id in links):
+            problems.append(f"vocabulary: {name} findings must be a list of IDs")
+            links = []
+        unknown = [finding_id for finding_id in links if finding_id not in finding_ids]
+        if unknown:
+            problems.append(f"vocabulary: {name} references unknown findings: {', '.join(unknown)}")
+        if misses and not links:
+            problems.append(f"vocabulary: {name} misses {', '.join(misses)} without an accepted finding")
+        named = sorted({path for path in by_path for spelling in spellings if spelling.casefold() in path.casefold()})
+        trials.append({
+            "concept": name,
+            "spellings": spellings,
+            "documented": {"mark": documented_mark, "path": documented_path},
+            "reach": reach,
+            "findings": links,
+            "hits": sum(len(hits) for hits in per_spelling.values()),
+            "hits_by_spelling": {spelling: len(hits) for spelling, hits in per_spelling.items()},
+            "hits_by_class": dict(Counter(
+                by_path[hit.rsplit(":", 1)[0]]["class"] for hits in per_spelling.values() for hit in hits
+            )),
+            "named_files": named,
+        })
+    ledger["vocabulary_rejected"] = valid_rejected
+    return trials
 
 
 def cmd_measure(args):
@@ -537,15 +762,15 @@ def cmd_measure(args):
     ledger = load(work / "ledger.json")
     repo = Path(inventory["repo"])
     by_path = {f["path"]: f for f in inventory["files"]}
-    cls = lambda hit: by_path[hit.rsplit(":", 1)[0]]["class"]
     problems = ledger["measure_problems"] = []
+    ids = {f["id"]: f for f in ledger["findings"]}
     for finding in ledger["findings"]:
         symbol = finding.get("symbol")
         if symbol:
             hits = grep_hits(repo, symbol, by_path)
             finding["blast"] = {
                 "symbol": symbol, "hits": len(hits), "files": len({h.rsplit(':', 1)[0] for h in hits}),
-                "by_class": dict(Counter(cls(h) for h in hits)), "paths": hits,
+                "by_class": dict(Counter(by_path[h.rsplit(':', 1)[0]]["class"] for h in hits)), "paths": hits,
             }
             new = finding.get("new_symbol")
             if new:
@@ -556,32 +781,8 @@ def cmd_measure(args):
                 finding["accept"].append({"argv": ["git", "grep", "-nw", "--", symbol], "expect": "0 hits" if new else "only the surviving owner"})
         elif not finding.get("accept"):
             finding["accept"] = []
-    concepts = load(work / "vocabulary.json", {"concepts": []})["concepts"]
-    trials = []
-    for concept in concepts:
-        per_spelling = {s: grep_hits(repo, s, by_path) for s in concept["spellings"]}
-        reach = {}
-        for key in ("owner", "wiring", "contract", "tests", "absence"):
-            value = concept.get("reach", {}).get(key)
-            if value in (None, ""):
-                reach[key] = {"mark": " ", "path": None}
-            elif value == "n/a":
-                reach[key] = {"mark": "-", "path": None}
-            elif value.split(":")[0] in by_path:
-                reach[key] = {"mark": "x", "path": value}
-            else:
-                reach[key] = {"mark": "?", "path": value}
-                problems.append(f"vocabulary: {concept['concept']} {key} path not in inventory: {value}")
-        named = sorted({p for p in by_path for s in concept["spellings"] if s.lower() in p.lower()})
-        trials.append({
-            "concept": concept["concept"], "spellings": concept["spellings"], "reach": reach,
-            "hits": sum(len(h) for h in per_spelling.values()),
-            "hits_by_spelling": {s: len(h) for s, h in per_spelling.items()},
-            "hits_by_class": dict(Counter(cls(h) for hits in per_spelling.values() for h in hits)),
-            "named_files": named,
-        })
+    trials = measure_vocabulary(work, ledger, repo, by_path, ids, problems)
     packets = load(work / "packets.json", {"packets": []})["packets"]
-    ids = {f["id"]: f for f in ledger["findings"]}
     assigned = Counter()
     packet_ids = Counter(p["id"] for p in packets)
     for pid, n in sorted(packet_ids.items()):
@@ -828,10 +1029,9 @@ def dimension_ledger(score):
 
 
 def reach_totals(trials):
-    keys = ("owner", "wiring", "contract", "tests", "absence")
-    totals = {key: {"reached": 0, "applicable": 0, "missing": []} for key in keys}
+    totals = {key: {"reached": 0, "applicable": 0, "missing": []} for key in REACH_SURFACES}
     for trial in trials:
-        for key in keys:
+        for key in REACH_SURFACES:
             mark = trial["reach"][key]["mark"]
             if mark == "-":
                 continue
@@ -844,22 +1044,34 @@ def reach_totals(trials):
 
 
 def reach_section(trials):
-    out = ["SEARCH REACH   [x] reached  [ ] not reached  [-] n/a  [?] path missing"]
+    out = [
+        "SEARCH REACH",
+        "  doc       [x] documented  [ ] undocumented  [!] unrecorded  [?] invalid proof",
+        "  surfaces  [x] proved      [ ] missed        [-] n/a         [!] untried  [?] invalid proof",
+    ]
     if not trials:
-        return out[0] + "\n  no vocabulary concepts recorded"
-    out.append(f"  {'concept':24} {'spellings':30} owner wire  cntr  test  absn  {'hits':>6}")
-    keys = ("owner", "wiring", "contract", "tests", "absence")
+        return "\n".join(out + ["  no vocabulary concepts recorded"])
+    out.append(f"  {'concept':22} {'spellings':26} doc  ownr  wire  cntr  test  absn  {'hits':>6}")
     for t in trials:
-        marks = "  ".join(f"[{t['reach'][k]['mark']}]" for k in keys)
-        out.append(f"  {t['concept'][:24]:24} {', '.join(t['spellings'])[:30]:30} {marks}  {fmt(t['hits']):>6}")
-        proofs = "; ".join(f"{key}={t['reach'][key]['path']}" for key in keys if t["reach"][key]["path"])
+        marks = "  ".join(f"[{t['reach'][key]['mark']}]" for key in REACH_SURFACES)
+        out.append(
+            f"  {t['concept'][:22]:22} {', '.join(t['spellings'])[:26]:26} "
+            f"[{t['documented']['mark']}]  {marks}  {fmt(t['hits']):>6}"
+        )
+        proofs = []
+        if t["documented"]["path"]:
+            proofs.append(f"documented={t['documented']['path']}")
+        proofs.extend(
+            f"{key}={t['reach'][key]['path']}" for key in REACH_SURFACES if t["reach"][key]["path"]
+        )
         if proofs:
-            out.append(field("proof", proofs, gutter=4))
+            out.append(field("proof", "; ".join(proofs), gutter=4))
     totals = reach_totals(trials)
     out.append("  reached: " + "  ".join(
-        f"{key} {totals[key]['reached']}/{totals[key]['applicable']}" for key in keys if totals[key]["applicable"]
+        f"{key} {totals[key]['reached']}/{totals[key]['applicable']}"
+        for key in REACH_SURFACES if totals[key]["applicable"]
     ))
-    out.append("  hits = git grep -nw count of every spelling across inventoried files")
+    out.append("  hits = case-insensitive fixed-substring count of every spelling across inventoried files")
     return "\n".join(out)
 
 
@@ -935,6 +1147,36 @@ def appendix(ledger):
     out.append(f"  dropped findings: {len(ledger['dropped'])}")
     for d in ledger["dropped"]:
         out.append(f"    {d['shard']}: {d['reason']}")
+    additions = ledger.get("vocabulary_additions", [])
+    out.append(f"  vocabulary additions: {len(additions)}")
+    for addition in additions:
+        spellings = addition.get("spellings", [])
+        paths = addition.get("paths", [])
+        spelling_text = ", ".join(str(value) for value in spellings) if isinstance(spellings, list) else str(spellings)
+        path_text = ", ".join(str(value) for value in paths) if isinstance(paths, list) else str(paths)
+        out.append(field(
+            addition.get("shard", "reader"),
+            f"{addition.get('concept', '?')}: {spelling_text}; paths {path_text}",
+            gutter=4,
+        ))
+    rejected = ledger.get("vocabulary_rejected", [])
+    out.append(f"  rejected vocabulary additions: {len(rejected)}")
+    for rejection in rejected:
+        out.append(field(
+            "rejected",
+            f"{rejection['concept']}: {', '.join(rejection['spellings'])}; {rejection['reason']}",
+            gutter=4,
+        ))
+    leads = ledger.get("cross_shard_leads", [])
+    out.append(f"  cross-shard leads: {len(leads)}")
+    for lead in leads:
+        paths = lead.get("paths", [])
+        path_text = ", ".join(str(value) for value in paths) if isinstance(paths, list) else str(paths)
+        out.append(field(
+            lead.get("shard", "reader"),
+            f"{lead.get('lead', '?')}; paths {path_text}",
+            gutter=4,
+        ))
     all_problems = ledger["problems"] + ledger.get("measure_problems", [])
     out.append(f"  problems: {len(all_problems)}")
     for p in all_problems:
@@ -1199,8 +1441,13 @@ def cmd_render(args):
         ("10. Reconciliation ledger and file manifest", appendix(ledger), True),
     ]
     parts = ["\n".join(head)] + [f"## {title}\n\n{markdown_code(text) if fenced else text}" for title, text, fenced in sections]
-    report = "\n\n".join(parts) + "\n"
-    report = ascii_safe(report)
+    body = ascii_safe("\n\n".join(parts) + "\n")
+    repository_name = ascii_safe(Path(inventory["repo"]).name)
+    brand = (
+        f"```text\n{GREP_WORDMARK}\n```\n\n"
+        f"> A read-only audit of how easily coding agents can work in {repository_name}.\n\n"
+    )
+    report = brand + body
     Path(args.out).write_text(report)
     audit = {
         "repository": {k: inventory[k] for k in ("repo", "origin", "head", "branch", "dirty", "scope")},
@@ -1212,6 +1459,9 @@ def cmd_render(args):
         "findings": findings,
         "dropped": ledger["dropped"],
         "trials": ledger.get("trials", []),
+        "vocabulary_additions": ledger.get("vocabulary_additions", []),
+        "vocabulary_rejected": ledger.get("vocabulary_rejected", []),
+        "cross_shard_leads": ledger.get("cross_shard_leads", []),
         "packets": ledger.get("packets", []),
         "unassigned_findings": ledger.get("unassigned_findings", []),
         "shards": ledger["shards"],
@@ -1223,7 +1473,7 @@ def cmd_render(args):
     print(progress_line(ledger))
     if not complete:
         print(f"incomplete: {uncovered} uncovered and {pending} pending files; do not deliver this as a whole-repository audit")
-    print(f"report: {args.out} ({report.count(chr(10))} lines, Markdown with 7-bit ASCII visuals)")
+    print(f"report: {args.out} ({report.count(chr(10))} lines, Markdown with branded UTF-8 header and ASCII visuals)")
 
 
 # --- main ----------------------------------------------------------------------------------

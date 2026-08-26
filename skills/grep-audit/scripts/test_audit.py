@@ -150,6 +150,9 @@ class AuditFlow(unittest.TestCase):
         no_check = {**good, "line": 3, "evidence": "}", "symbol": None}
         read = [p for p in shard["files"] if p != "README.md"]
         artifact = self.artifact(shard, read, ["README.md"], [good, fabricated, no_fix, both, no_check])
+        artifact["vocabulary_additions"] = [
+            {"concept": "invoice", "spellings": ["invoice"], "paths": ["src/billing/invoice.ts:1"]}
+        ]
         (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(artifact))
         out = run("verify", "--work", str(self.work))
         self.assertIn("RE-DISPATCH", out)
@@ -177,8 +180,9 @@ class AuditFlow(unittest.TestCase):
         self.assertTrue(any(d["reason"].startswith("duplicate of") for d in ledger["dropped"]))
         self.assertEqual(next(f for f in ledger["files"] if f["path"] == "README.md")["status"], "uncovered")
         (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [
-            {"concept": "organization", "spellings": ["organization"],
-             "reach": {"owner": "migrations/001_init.sql", "wiring": None, "contract": "n/a", "tests": None, "absence": "missing/file.ts"}}]}))
+            {"concept": "organization", "spellings": ["organization"], "documented": "README.md:2",
+             "reach": {"owner": "migrations/001_init.sql", "wiring": None, "contract": "n/a", "tests": "n/a", "absence": "missing/file.ts"},
+             "findings": []}], "rejected": []}))
         ids = [f["id"] for f in ledger["findings"]]
         packets = {"packets": [
             {"id": "P-02", "title": "Rename process", "findings": ids[:1], "after": ["P-01"], "accept": []},
@@ -201,6 +205,8 @@ class AuditFlow(unittest.TestCase):
         self.assertIn("2 packets", out)
         self.assertIn("packet P-02: accept must be a non-empty list", out)
         self.assertIn("path not in inventory: missing/file.ts", out)
+        self.assertIn("unresolved addition invoice", out)
+        self.assertIn("misses wiring without an accepted finding", out)
         self.assertIn(f"no property_checks evidence: {clean[0]!r}", out)
         # Fixing the artifacts and rerunning measure clears its problems instead of accumulating them.
         packets["packets"][0]["accept"] = [{"argv": ["git", "grep", "-nw", "--", "processInvoice"], "expect": "definition and calls"}]
@@ -209,6 +215,13 @@ class AuditFlow(unittest.TestCase):
         (self.work / "narrative.json").write_text(json.dumps(narrative))
         vocabulary = json.loads((self.work / "vocabulary.json").read_text())
         vocabulary["concepts"][0]["reach"]["absence"] = "n/a"
+        vocabulary["concepts"][0]["findings"] = [ids[0]]
+        vocabulary["concepts"].append({
+            "concept": "invoice", "spellings": ["invoice"], "documented": None,
+            "reach": {"owner": "src/billing/invoice.ts", "wiring": "n/a", "contract": "n/a",
+                      "tests": "tests/billing/invoice.test.ts", "absence": "n/a"},
+            "findings": [],
+        })
         (self.work / "vocabulary.json").write_text(json.dumps(vocabulary))
         out = run("measure", "--work", str(self.work))
         self.assertIn("problems 0", out)
@@ -218,11 +231,15 @@ class AuditFlow(unittest.TestCase):
         self.assertEqual(blast["new_symbol_hits"], 0)
         self.assertEqual([p["id"] for p in ledger["packets"]], ["P-01", "P-02"])
         self.assertEqual(ledger["trials"][0]["reach"]["absence"]["mark"], "-")
+        self.assertEqual(ledger["trials"][1]["documented"]["mark"], " ")
         self.assertEqual(ledger["measure_problems"], [])
         report = self.work / "audit.md"
         out = run("render", "--work", str(self.work), "--out", str(report))
         text = report.read_text()
-        text.encode("ascii")
+        self.assertTrue(text.startswith("```text\n" + AUDIT.GREP_WORDMARK))
+        self.assertIn(AUDIT.GREP_WORDMARK, (SCRIPT.parent.parent / "SKILL.md").read_text())
+        self.assertIn("GREPPABILITY AUDIT", text)
+        self.assertIn("A read-only audit of how easily coding agents can work in repo.", text)
         for section in ("## 1. Verdict", "## 2. Repository map", "## 3. Coverage", "## 4. Heat grid",
                         "## 5. Rubric scorecard", "## 6. Search reach", "## 7. Findings",
                         "## 8. Work packets", "## 9. Handoff", "## 10. Reconciliation ledger"):
@@ -239,6 +256,7 @@ class AuditFlow(unittest.TestCase):
         self.assertIn("**LOW:** Search succeeds, but inconsistent names or structure still add friction.", text)
         self.assertIn("star re-export hides names", text)
         self.assertIn("proof", text)
+        self.assertIn("vocabulary additions: 1", text)
         self.assertIn("README.md  (uncovered", text)
         self.assertIn("scale: one # =", text)
         self.assertIn("**Coverage:** INCOMPLETE: 1 uncovered", text)
@@ -248,6 +266,7 @@ class AuditFlow(unittest.TestCase):
         self.assertNotIn("UNVERIFIED", text)
         self.assertNotIn("audit.json", text)
         self.assertIn("report:", out)
+        self.assertIn("branded UTF-8 header and ASCII visuals", out)
         self.assertNotIn("data:", out)
         in_fence = False
         for line in text.splitlines():
@@ -268,6 +287,62 @@ class AuditFlow(unittest.TestCase):
         self.assertIn("Give invoice processing a domain name", card)
         self.assertIn("─" * 78, card)
         self.assertTrue(card.rstrip().endswith(f"Detailed audit   {report.resolve()}"))
+
+    def test_measure_rejects_open_or_untrialed_vocabulary(self):
+        self.inventory("--shard-lines", "100000")
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        artifact = self.artifact(shard, shard["files"], [], [])
+        artifact["vocabulary_additions"] = [
+            {"concept": "invoice", "spellings": ["invoice", "bill"], "paths": ["src/billing/invoice.ts"]}
+        ]
+        (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(artifact))
+        run("verify", "--work", str(self.work))
+        (self.work / "vocabulary.json").write_text(json.dumps({
+            "concepts": [{
+                "concept": "organization", "spellings": ["organization"], "documented": "README.md:2",
+                "reach": {"owner": "src/shared/utils.ts:1"}, "findings": [],
+            }],
+            "rejected": [],
+        }))
+        properties = json.loads((self.work / "inventory.json").read_text())["properties"]
+        narrative = {
+            "verdict": "No findings.", "method": "1 shard, sequential.", "themes": [],
+            "property_checks": {property_name: "checked" for property_name in properties},
+        }
+        (self.work / "narrative.json").write_text(json.dumps(narrative))
+        (self.work / "packets.json").write_text(json.dumps({"packets": []}))
+        out = run("measure", "--work", str(self.work))
+        self.assertIn("unresolved addition invoice: invoice, bill", out)
+        self.assertIn("not trialed: missing reach wiring, contract, tests, absence", out)
+        self.assertIn("proof contains none of its spellings", out)
+        inventory = json.loads((self.work / "inventory.json").read_text())
+        ledger = json.loads((self.work / "ledger.json").read_text())
+        self.assertIsNone(AUDIT.audit_score(inventory, ledger, narrative)["value"])
+
+        vocabulary = json.loads((self.work / "vocabulary.json").read_text())
+        vocabulary["concepts"][0]["reach"] = {
+            "owner": "migrations/001_init.sql", "wiring": "n/a", "contract": "n/a",
+            "tests": "n/a", "absence": "n/a",
+        }
+        vocabulary["rejected"] = [{
+            "concept": "invoice", "spellings": ["invoice", "bill"],
+            "reason": "The shard reported a feature word already covered by the billing boundary.",
+        }]
+        (self.work / "vocabulary.json").write_text(json.dumps(vocabulary))
+        out = run("measure", "--work", str(self.work))
+        self.assertIn("problems 0", out)
+        ledger = json.loads((self.work / "ledger.json").read_text())
+        self.assertEqual(ledger["vocabulary_rejected"][0]["concept"], "invoice")
+        self.assertEqual(AUDIT.audit_score(inventory, ledger, narrative)["value"], 100)
+
+    def test_vocabulary_search_finds_compound_identifiers(self):
+        path = self.repo / "src" / "organization-runtime.ts"
+        path.write_text("export const organizationId = 'o1';\nexport class OrganizationRepository {}\n")
+        inventory = self.inventory()
+        by_path = {file["path"]: file for file in inventory["files"]}
+        hits = AUDIT.grep_hits(self.repo, "organization", by_path, whole_word=False)
+        self.assertIn("src/organization-runtime.ts:1", hits)
+        self.assertIn("src/organization-runtime.ts:2", hits)
 
     def test_score_uses_worst_severity_per_property(self):
         properties = AUDIT.rubric_headings(RUBRIC)
