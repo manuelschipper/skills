@@ -34,7 +34,11 @@ Write `{{ARTIFACT}}` as JSON with exactly this shape:
       "new_symbol": "proposed replacement identifier (optional; checked for collisions)",
       "searches": [{"term": "process", "note": "212 hits in 87 files; owner not on the first page"}],
       "recipe": ["mechanical step 1", "mechanical step 2"],
-      "decision": {"question": "what a human must decide", "options": ["option A", "option B"]},
+      "decision": {
+        "question": "what design choice the finding raises",
+        "options": ["option A", "option B"],
+        "recommendation": "the option the audit recommends and why"
+      },
       "accept": [{"argv": ["git", "grep", "-nw", "--", "oldName"], "expect": "0 hits"}]
     }
   ],
@@ -53,9 +57,10 @@ Rules for findings:
 - Severity: HIGH when a domain search cannot reach the owner or the contract; MED when it reaches
   them only through extra reads; LOW when only consistency suffers.
 - Exactly one of `recipe` or `decision`: a `recipe` when the fix is mechanical (rename, move,
-  delete, add a doc line, replace a re-export, write a literal); a `decision` with options when
-  the fix needs a design choice (which module owns a concept, how to split a file). Never invent a
-  design as a recipe.
+  delete, add a doc line, replace a re-export, write a literal); a `decision` with at least two
+  options when the fix needs a design choice (which module owns a concept, how to split a file).
+  Give every decision one recommendation with the preferred option and the reason. Never invent a
+  design as a recipe, and never leave the recommendation to the user.
 - `accept` checks are argv arrays with an `expect` sentence, never shell strings. A finding needs
   either `accept` or a `symbol`, from which `git grep -nw` checks for the old and new name are
   derived. A `decision` finding names the check that proves the chosen option landed.

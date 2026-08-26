@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Mechanical half of the audit-greppability skill.
+"""Mechanical half of the grep-audit skill.
 
 The model judges; this script enumerates, assigns, reconciles, measures, and renders, so every
 count in the report comes from a file on disk rather than from memory. Subcommands run in this
-order: inventory, shard-prompt, verify, measure, render. All artifacts live in one work directory
+order: inventory, shard-prompt, verify, measure, render, card. All artifacts live in one work directory
 outside the audited repository. Requires git and Python 3; nothing else.
 """
 
@@ -21,9 +21,47 @@ BOUNDARY_CLASSES = ("generated", "vendored")
 LISTED_CLASSES = ("data", "binary")
 CLASS_ORDER = READ_CLASSES + BOUNDARY_CLASSES + LISTED_CLASSES
 SEVERITIES = ("HIGH", "MED", "LOW")
+SEVERITY_DEFINITIONS = {
+    "HIGH": "A domain search cannot reach the concept's owner or contract.",
+    "MED": "Search reaches the owner or contract only after extra reads or context reconstruction.",
+    "LOW": "Search succeeds, but inconsistent names or structure still add friction.",
+}
+DIMENSIONS = (
+    ("Names & vocabulary", (
+        "Use distinctive domain names",
+        "Use one spelling per concept",
+        "Keep names true as behavior changes",
+        "Keep operational strings whole",
+    )),
+    ("Ownership & layout", (
+        "Give each definition one home",
+        "Make paths and exports say where code lives",
+        "Put the searchable explanation at the definition",
+        "Make imports readable as contracts",
+        "Give each cohesive concept one boundary",
+        "Treat line count as a diagnostic, not a design rule",
+    )),
+    ("Contracts & boundaries", (
+        "Use precise identity and state types",
+        "Encode authority and validate boundaries",
+        "State ownership and dependency direction",
+    )),
+    ("Execution flow", (
+        "Show cross-cutting composition",
+        "Keep orchestration visible and side effects owned",
+    )),
+    ("Tests & repository memory", (
+        "Make tests and fixtures answer to feature terms",
+        "Record expected absence",
+        "Remove obsolete paths and mark retained dead ends",
+        "Record repository-wide search conventions",
+    )),
+)
 DEFAULT_SHARD_LINES = 10000
 MAX_SHARD_FILES = 400
 REPORT_WIDTH = 100
+CARD_WIDTH = 78
+SEVERITY_CREDIT = {"HIGH": 0.0, "MED": 0.5, "LOW": 0.75}
 
 VENDOR_SEGMENTS = {"vendor", "vendored", "third_party", "third-party", "node_modules", "extern", "external"}
 GENERATED_SEGMENTS = {"generated", "__generated__", "gen", "dist", "build"}
@@ -303,6 +341,15 @@ def check_finding(finding, index, inventory, repo, properties):
         return f"finding {index}: severity must be one of {SEVERITIES}"
     if bool(finding.get("recipe")) == bool(finding.get("decision")):
         return f"finding {index}: needs exactly one of recipe (list of steps) or decision (question and options)"
+    if finding.get("decision"):
+        decision = finding["decision"]
+        if not isinstance(decision, dict) or not isinstance(decision.get("question"), str) or not decision["question"].strip():
+            return f"finding {index}: decision needs a question"
+        options = decision.get("options")
+        if not isinstance(options, list) or len(options) < 2 or not all(isinstance(option, str) and option.strip() for option in options):
+            return f"finding {index}: decision needs at least two non-empty options"
+        if not isinstance(decision.get("recommendation"), str) or not decision["recommendation"].strip():
+            return f"finding {index}: decision needs a recommendation"
     if not finding.get("accept") and not finding.get("symbol"):
         return f"finding {index}: needs accept checks or a symbol to derive them from"
     if finding.get("accept") and (error := check_accept(finding["accept"])):
@@ -561,6 +608,7 @@ def cmd_measure(args):
     for prop in clean:
         if not narrative.get("property_checks", {}).get(prop):
             problems.append(f"narrative: clean property has no property_checks evidence: {prop!r}")
+    check_narrative(narrative, ids, packets, problems)
     order = topological(packets)
     ledger["trials"] = trials
     ledger["packets"] = [next(p for p in packets if p["id"] == pid) for pid in order]
@@ -570,6 +618,51 @@ def cmd_measure(args):
           f" {len(packets)} packets ({len(unassigned)} findings unassigned); problems {len(problems)}")
     for problem in problems:
         print(f"  problem: {problem}")
+
+
+def check_narrative(narrative, findings, packets, problems):
+    themes = narrative.get("themes")
+    if not findings and themes in (None, []):
+        return
+    if not isinstance(themes, list) or not themes:
+        problems.append("narrative: themes must cover every accepted finding")
+        return
+    if len(themes) > 3:
+        problems.append("narrative: themes must contain at most 3 entries")
+    packet_findings = {packet["id"]: set(packet["findings"]) for packet in packets}
+    seen = Counter()
+    for index, theme in enumerate(themes, 1):
+        if not isinstance(theme, dict):
+            problems.append(f"narrative: theme {index} must be an object")
+            continue
+        for key in ("title", "explanation"):
+            if not isinstance(theme.get(key), str) or not theme[key].strip():
+                problems.append(f"narrative: theme {index} needs non-empty {key}")
+        theme_findings = theme.get("findings")
+        if not isinstance(theme_findings, list) or not theme_findings:
+            problems.append(f"narrative: theme {index} needs finding IDs")
+            theme_findings = []
+        unknown = [finding_id for finding_id in theme_findings if finding_id not in findings]
+        if unknown:
+            problems.append(f"narrative: theme {index} has unknown findings {', '.join(unknown)}")
+        seen.update(finding_id for finding_id in theme_findings if finding_id in findings)
+        theme_packets = theme.get("packets")
+        if not isinstance(theme_packets, list) or not theme_packets:
+            problems.append(f"narrative: theme {index} needs packet IDs")
+            theme_packets = []
+        unknown_packets = [packet_id for packet_id in theme_packets if packet_id not in packet_findings]
+        if unknown_packets:
+            problems.append(f"narrative: theme {index} has unknown packets {', '.join(unknown_packets)}")
+        assigned = set().union(*(packet_findings.get(packet_id, set()) for packet_id in theme_packets))
+        missing = [finding_id for finding_id in theme_findings if finding_id in findings and finding_id not in assigned]
+        if missing:
+            problems.append(f"narrative: theme {index} packets do not contain findings {', '.join(missing)}")
+    missing = [finding_id for finding_id in findings if seen[finding_id] == 0]
+    duplicates = [finding_id for finding_id, count in seen.items() if count > 1]
+    if missing:
+        problems.append(f"narrative: findings absent from themes: {', '.join(missing)}")
+    if duplicates:
+        problems.append(f"narrative: findings in more than one theme: {', '.join(duplicates)}")
 
 
 def topological(packets):
@@ -722,24 +815,50 @@ def property_ledger(ledger, properties, narrative):
     return "\n".join(out)
 
 
+def dimension_ledger(score):
+    property_number = {state["property"]: index for index, state in enumerate(score["states"], 1)}
+    out = ["DIMENSION SCORES   same property credits as the overall score"]
+    out.append(f"  {'dimension':29} {'score':>5}  properties")
+    for dimension in score["dimensions"]:
+        value = "--" if dimension["value"] is None else str(dimension["value"])
+        numbers = ", ".join(str(property_number[prop]) for prop in dimension["properties"] if prop in property_number)
+        out.append(f"  {dimension['name']:29} {value:>5}  {numbers}")
+    out.append("  property numbers refer to the ledger below; n/a properties are excluded")
+    return "\n".join(out)
+
+
+def reach_totals(trials):
+    keys = ("owner", "wiring", "contract", "tests", "absence")
+    totals = {key: {"reached": 0, "applicable": 0, "missing": []} for key in keys}
+    for trial in trials:
+        for key in keys:
+            mark = trial["reach"][key]["mark"]
+            if mark == "-":
+                continue
+            totals[key]["applicable"] += 1
+            if mark == "x":
+                totals[key]["reached"] += 1
+            else:
+                totals[key]["missing"].append(trial["concept"])
+    return totals
+
+
 def reach_section(trials):
     out = ["SEARCH REACH   [x] reached  [ ] not reached  [-] n/a  [?] path missing"]
     if not trials:
         return out[0] + "\n  no vocabulary concepts recorded"
     out.append(f"  {'concept':24} {'spellings':30} owner wire  cntr  test  absn  {'hits':>6}")
     keys = ("owner", "wiring", "contract", "tests", "absence")
-    totals = Counter()
     for t in trials:
         marks = "  ".join(f"[{t['reach'][k]['mark']}]" for k in keys)
-        for k in keys:
-            if t["reach"][k]["mark"] in ("x", " "):
-                totals[k + "_n"] += 1
-                totals[k] += t["reach"][k]["mark"] == "x"
         out.append(f"  {t['concept'][:24]:24} {', '.join(t['spellings'])[:30]:30} {marks}  {fmt(t['hits']):>6}")
         proofs = "; ".join(f"{key}={t['reach'][key]['path']}" for key in keys if t["reach"][key]["path"])
         if proofs:
             out.append(field("proof", proofs, gutter=4))
-    out.append("  reached: " + "  ".join(f"{k} {totals[k]}/{totals[k + '_n']}" for k in keys if totals[k + "_n"]))
+    totals = reach_totals(trials)
+    out.append("  reached: " + "  ".join(
+        f"{key} {totals[key]['reached']}/{totals[key]['applicable']}" for key in keys if totals[key]["applicable"]
+    ))
     out.append("  hits = git grep -nw count of every spelling across inventoried files")
     return "\n".join(out)
 
@@ -769,6 +888,7 @@ def card(finding, packet_of):
             out.append(field("recipe" if index == 1 else "", f"{index}. {step}"))
     if f.get("decision"):
         out.append(field("decision", f["decision"].get("question", "")))
+        out.append(field("recommend", f["decision"].get("recommendation", "")))
         for option in f["decision"].get("options", []):
             out.append(field("", f"- {option}"))
     for index, check in enumerate(f.get("accept", [])):
@@ -843,19 +963,201 @@ def markdown_cell(text):
     return " ".join(ascii_safe(text).split()).replace("|", "\\|")
 
 
+def audit_score(inventory, ledger, narrative):
+    findings = ledger["findings"]
+    not_applicable = narrative.get("properties_not_applicable", {})
+    checks = narrative.get("property_checks", {})
+    blockers = list(ledger["problems"] + ledger.get("measure_problems", []))
+    incomplete = [f for f in ledger["files"] if f["treatment"] == "read" and f["status"] != "read-in-full"]
+    if incomplete:
+        blockers.append(f"{len(incomplete)} maintained project files are not read in full")
+    if ledger.get("unassigned_findings"):
+        blockers.append(f"{len(ledger['unassigned_findings'])} findings are not assigned to packets")
+    states = []
+    for prop in inventory["properties"]:
+        if prop in not_applicable:
+            states.append({"property": prop, "state": "n/a", "credit": None})
+            continue
+        severities = [f["severity"] for f in findings if f["property"] == prop]
+        if severities:
+            worst = min(severities, key=SEVERITIES.index)
+            states.append({"property": prop, "state": worst, "credit": SEVERITY_CREDIT[worst]})
+        elif checks.get(prop):
+            states.append({"property": prop, "state": "clean", "credit": 1.0})
+        else:
+            states.append({"property": prop, "state": "unverified", "credit": None})
+            blockers.append(f"property is unverified: {prop}")
+    applicable = [state for state in states if state["state"] != "n/a"]
+    if not applicable:
+        blockers.append("no rubric properties are applicable")
+    raw = 100 * sum(state["credit"] for state in applicable) / len(applicable) if applicable else 0
+    value = None if blockers else int(raw + 0.5)
+    state_by_property = {state["property"]: state for state in states}
+    dimensions = []
+    for name, properties in DIMENSIONS:
+        dimension_states = [state_by_property[prop] for prop in properties if prop in state_by_property]
+        dimension_applicable = [state for state in dimension_states if state["state"] != "n/a"]
+        complete = len(dimension_states) == len(properties) and all(
+            state["credit"] is not None for state in dimension_applicable
+        )
+        dimension_raw = (
+            100 * sum(state["credit"] for state in dimension_applicable) / len(dimension_applicable)
+            if dimension_applicable else 0
+        )
+        dimensions.append({
+            "name": name,
+            "value": int(dimension_raw + 0.5) if not blockers and complete and dimension_applicable else None,
+            "properties": list(properties),
+        })
+    return {
+        "value": value,
+        "applicable": len(applicable),
+        "clean": sum(state["state"] == "clean" for state in applicable),
+        "affected": sum(state["state"] in SEVERITIES for state in applicable),
+        "not_applicable": len(states) - len(applicable),
+        "states": states,
+        "dimensions": dimensions,
+        "blockers": blockers,
+    }
+
+
+def open_field(label, value, label_width=15):
+    prefix = "  " + f"{label:{label_width}} "
+    return textwrap.fill(" ".join(str(value).split()), width=CARD_WIDTH, initial_indent=prefix,
+                         subsequent_indent=" " * len(prefix), break_long_words=False, break_on_hyphens=False)
+
+
+def open_paragraph(value, indent=2):
+    prefix = " " * indent
+    return textwrap.fill(" ".join(str(value).split()), width=CARD_WIDTH, initial_indent=prefix,
+                         subsequent_indent=prefix, break_long_words=False, break_on_hyphens=False)
+
+
+def property_bar(score):
+    return "●" * score["clean"] + "○" * score["affected"]
+
+
+def score_bar(value, width=10):
+    if value is None:
+        return "○" * width
+    filled = int(width * value / 100 + 0.5)
+    return "●" * filled + "○" * (width - filled)
+
+
+def cmd_card(args):
+    work = Path(args.work)
+    report_path = Path(args.report)
+    if not report_path.is_absolute():
+        sys.exit("--report must be an absolute path")
+    audit = load(work / "audit.json")
+    repository = audit["repository"]
+    findings = audit["findings"]
+    narrative = audit["narrative"]
+    score = audit["score"]
+    dirty = f"dirty ({len(repository['dirty'])} entries)" if repository["dirty"] else "clean"
+    severity = Counter(finding["severity"] for finding in findings)
+    separator = "─" * CARD_WIDTH
+    lines = [
+        "  GREPPABILITY AUDIT",
+        f"  {Path(repository['repo']).name}  {repository['head'][:12]}  {repository['branch']}  {dirty}",
+        "",
+    ]
+    if score["value"] is None:
+        lines.append("  SCORE  WITHHELD")
+        lines.append(open_field("reason", "; ".join(score["blockers"])))
+    else:
+        lines.append(
+            f"  SCORE  {score['value']}   {property_bar(score)}   "
+            f"{score['clean']} of {score['applicable']} properties clean"
+        )
+    high_status = "No high-risk findings" if severity["HIGH"] == 0 else (
+        f"{severity['HIGH']} high-risk finding" + ("s" if severity["HIGH"] != 1 else "")
+    )
+    improvement_status = "no improvements recommended" if not findings else (
+        f"{len(findings)} improvement" + ("s" if len(findings) != 1 else "") + " recommended"
+    )
+    lines.extend([
+        f"              {high_status} · {improvement_status}",
+        "",
+        separator,
+        "  VERDICT",
+        open_paragraph(narrative["verdict"]),
+        "",
+        separator,
+        "  DIMENSION SCORES",
+        "",
+    ])
+    for dimension in score["dimensions"]:
+        value = "--" if dimension["value"] is None else str(dimension["value"])
+        lines.append(f"  {dimension['name']:27} {value:>3}   {score_bar(dimension['value'])}")
+    lines.append("")
+    themes = narrative.get("themes", [])
+    if themes:
+        lines.extend([separator, "  TOP IMPROVEMENTS", ""])
+        for index, theme in enumerate(themes, 1):
+            lines.append(f"  {index}  {theme['title']}")
+            lines.extend(["", open_paragraph(theme["explanation"], indent=5), "", ""])
+    else:
+        lines.extend([separator, "  TOP IMPROVEMENTS", "", "  None recommended.", ""])
+    totals = reach_totals(audit.get("trials", []))
+    readable = [file for file in audit["files"] if file["treatment"] == "read"]
+    read = sum(file["status"] == "read-in-full" for file in readable)
+    uncovered = sum(file["status"] == "uncovered" for file in readable)
+    pending = sum(file["status"] == "pending" for file in readable)
+    checked = sum(state["state"] != "unverified" for state in score["states"])
+    gaps = uncovered + pending
+    coverage_text = (
+        f"{read}/{len(readable)} maintained project files read · "
+        + (f"all {len(score['states'])} properties checked" if checked == len(score["states"])
+           else f"{checked}/{len(score['states'])} properties checked")
+        + (" · no coverage gaps" if gaps == 0 else f" · {gaps} coverage gap" + ("s" if gaps != 1 else ""))
+    )
+    keys = ("owner", "wiring", "contract", "tests", "absence")
+    misses = [(key, concept) for key in keys for concept in totals[key]["missing"]]
+    if not audit.get("trials"):
+        search_text = "No vocabulary search trials recorded."
+    elif not misses:
+        search_text = "Search reached every applicable owner, wiring path, contract, test, and expected absence."
+    else:
+        search_text = "Search misses: " + "; ".join(f"{key} for {concept}" for key, concept in misses) + "."
+    lines.extend([
+        separator,
+        "  AUDIT RECEIPT",
+        "",
+        open_paragraph(coverage_text),
+        open_paragraph(search_text),
+        "",
+    ])
+    reconciliation = len(audit["dropped"]) + len(audit["problems"])
+    if reconciliation:
+        lines.extend([
+            open_paragraph(
+                f"Reconciliation: {len(audit['dropped'])} dropped · {len(audit['problems'])} problem"
+                + ("s" if len(audit["problems"]) != 1 else "") + "."
+            ),
+            "",
+        ])
+    lines.append(f"Detailed audit   {report_path}")
+    print("\n".join(lines))
+
+
 def cmd_render(args):
     work = Path(args.work)
     inventory = load(work / "inventory.json")
     ledger = load(work / "ledger.json")
     narrative = load(work / "narrative.json")
     properties = inventory["properties"]
+    score = audit_score(inventory, ledger, narrative)
     packet_of = {fid: p["id"] for p in ledger.get("packets", []) for fid in p["findings"]}
     dirty = f"dirty ({len(inventory['dirty'])} entries)" if inventory["dirty"] else "clean"
     uncovered = sum(f["status"] == "uncovered" for f in ledger["files"])
     pending = sum(f["status"] == "pending" for f in ledger["files"])
     complete = uncovered == 0 and pending == 0
-    coverage = ("Complete: every hand-written file was read in full." if complete else
+    coverage = ("Complete: every maintained project file was read in full." if complete else
                 f"INCOMPLETE: {uncovered} uncovered and {pending} pending files. This is not a whole-repository audit; see the ledger.")
+    score_text = "withheld; " + "; ".join(score["blockers"]) if score["value"] is None else (
+        f"{score['value']}/100; {score['clean']} clean + {score['affected']} affected / {score['applicable']} applicable properties"
+    )
     head = [
         f"# Greppability audit: {Path(inventory['repo']).name}",
         "",
@@ -867,6 +1169,8 @@ def cmd_render(args):
         f"| Revision | `{inventory['head'][:12]}` on `{inventory['branch']}`; {dirty} |",
         f"| Scope | {', '.join(inventory['scope']) if inventory['scope'] else 'whole repository'} |",
         f"| Rubric | greppable, {len(properties)} properties |",
+        f"| Score | {markdown_cell(score_text)} |",
+        "| Score scale | Worst accepted severity per property: clean 1.00, LOW 0.75, MED 0.50, HIGH 0.00; n/a excluded. |",
         f"| Method | {markdown_cell(narrative['method'])} |",
         "| Provenance | Every count is derived from reconciled work artifacts; the full file manifest is in the ledger. |",
     ]
@@ -875,17 +1179,19 @@ def cmd_render(args):
         f"### {f['id']} - {f['severity']} - {ascii_safe(f['property'])}\n\n{markdown_code(card(f, packet_of))}"
         for f in findings
     ) or "No findings."
+    severity_legend = "\n".join(f"- **{level}:** {SEVERITY_DEFINITIONS[level]}" for level in SEVERITIES)
+    body = f"{severity_legend}\n\n{body}"
     handoff = wrap(
-        "Fix in packet order. For each packet: apply every recipe, resolve every decision with the user before "
-        "touching it, run the packet's accept lines, then each finding's accept lines. A packet is done when "
+        "Fix in packet order. For each packet: apply every recipe, follow the recorded recommendation for every "
+        "design finding, run the packet's accept lines, then each finding's accept lines. A packet is done when "
         "all accept lines hold and git status shows only files it lists. This report contains the complete "
-        "evidence, blast paths, repair or decision, and acceptance checks for every finding.")
+        "evidence, blast paths, recommended repair, alternatives, and acceptance checks for every finding.")
     sections = [
         ("1. Verdict", wrap(narrative["verdict"]), False),
         ("2. Repository map", map_section(ledger), True),
         ("3. Coverage", coverage_table(inventory, ledger) + "\n\n" + exclusion_table(ledger["files"]), True),
         ("4. Heat grid", heat_section(ledger, properties), True),
-        ("5. Property ledger", property_ledger(ledger, properties, narrative), True),
+        ("5. Rubric scorecard", dimension_ledger(score) + "\n\n" + property_ledger(ledger, properties, narrative), True),
         ("6. Search reach", reach_section(ledger.get("trials", [])), True),
         (f"7. Findings ({len(findings)} accepted, {len(ledger['dropped'])} dropped)", body, False),
         ("8. Work packets", packets_section(ledger), False),
@@ -900,6 +1206,7 @@ def cmd_render(args):
         "repository": {k: inventory[k] for k in ("repo", "origin", "head", "branch", "dirty", "scope")},
         "rubric": {"path": inventory["rubric"], "properties": properties},
         "narrative": narrative,
+        "score": score,
         "coverage": {cls: Counter(f["status"] for f in ledger["files"] if f["class"] == cls) for cls in CLASS_ORDER},
         "files": ledger["files"],
         "findings": findings,
@@ -953,6 +1260,11 @@ def main():
     p.add_argument("--work", required=True)
     p.add_argument("--out", required=True, help="audit.md path")
     p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser("card", help="print the human briefing for a stored detailed report")
+    p.add_argument("--work", required=True)
+    p.add_argument("--report", required=True, help="absolute path to the stored audit.md")
+    p.set_defaults(func=cmd_card)
 
     args = parser.parse_args()
     args.func(args)

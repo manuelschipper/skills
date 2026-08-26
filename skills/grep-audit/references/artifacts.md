@@ -56,7 +56,7 @@ from its findings and their blast radii, and reports a missing or malformed `acc
   "packets": [
     {
       "id": "P-01",
-      "title": "Vocabulary: organization",
+      "title": "Standardize organization vocabulary",
       "findings": ["F-003", "F-007"],
       "after": [],
       "note": "canonical term recorded in AGENTS.md:14",
@@ -67,7 +67,9 @@ from its findings and their blast radii, and reports a missing or malformed `acc
 ```
 
 Every accepted finding belongs to exactly one packet; `measure` reports the unassigned and the
-duplicated.
+duplicated. Make `title` an imperative recommendation. Do not use titles such as "Choose the
+owner" or "Decide the boundary"; put alternatives and the recommended option on the design
+finding, then title the packet with that recommendation.
 
 ## `narrative.json`
 
@@ -75,8 +77,16 @@ The prose the script cannot derive.
 
 ```json
 {
-  "verdict": "Three to six sentences on what a grep-first agent meets in this repository.",
+  "verdict": "One or two sentences on the repository's greppability and its main weakness.",
   "method": "4 shards via the host's subagent tool, 1 re-dispatched; cross-file pass in the main session.",
+  "themes": [
+    {
+      "title": "Give global and local owners explicit names",
+      "explanation": "Names such as Project and Runtime only become meaningful after reading their surrounding modules. Name each type for the domain it owns.",
+      "findings": ["F-001", "F-002"],
+      "packets": ["P-01", "P-02"]
+    }
+  ],
   "property_checks": {
     "Keep names true as behavior changes": "74 renames in git log -p --diff-filter=M compared with call sites; import renames: git grep -n ' as ' -- '*.ts' = 0"
   },
@@ -88,6 +98,13 @@ Keys in both maps are rubric headings copied exactly. `property_checks` is requi
 property with zero findings: the concrete check that supports "clean" (the search run, the count
 seen), shown verbatim in the property ledger; `measure` reports a clean property without one as a
 problem. Use `properties_not_applicable` rarely and say why.
+
+`themes` is empty only when there are no accepted findings. Otherwise it contains at most three
+entries, in recommended execution order, and partitions every accepted finding exactly once.
+`title` is the recommended action in plain language. `explanation` uses two or three short
+sentences to combine the current friction, its consequence, and why the action helps. `findings`
+and `packets` provide traceability to the detailed Markdown; each named packet must contain the
+theme's findings. Keep IDs, paths, and severity codes out of both prose fields.
 
 `measure` recomputes its own problems (vocabulary paths, packets, property checks) on every run,
 so fixing an artifact and rerunning `measure` clears them; `verify` problems clear on rerunning

@@ -1,5 +1,6 @@
 """Behavioral tests for audit.py on a throwaway git repository. Run: python3 -m unittest test_audit"""
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -9,6 +10,9 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "audit.py"
 RUBRIC = Path(__file__).resolve().parent.parent.parent / "greppable" / "SKILL.md"
+SPEC = importlib.util.spec_from_file_location("audit_script", SCRIPT)
+AUDIT = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(AUDIT)
 
 FILES = {
     "src/billing/invoice.ts": "export function process(input) {\n  return normalize(input);\n}\n" + "x\n" * 30,
@@ -160,7 +164,8 @@ class AuditFlow(unittest.TestCase):
         (self.work / "shards" / "main.json").write_text(json.dumps({"shard": "main", "files_read": [], "files_skipped": [], "findings": [
             {"property": "Make paths and exports say where code lives", "severity": "MED", "path": "src/shared/utils.ts", "line": 1,
              "evidence": "export * from './x';", "observation": "star re-export hides names",
-             "decision": {"question": "which module owns utils", "options": ["billing", "delete"]},
+             "decision": {"question": "which module owns utils", "options": ["billing", "delete"],
+                          "recommendation": "Delete the generic re-export so billing owns the symbol."},
              "accept": [{"argv": ["git", "grep", "-n", "export \\*", "--", "src"], "expect": "0 hits"}]},
             dict(good)]}))
         out = run("verify", "--work", str(self.work))
@@ -182,7 +187,15 @@ class AuditFlow(unittest.TestCase):
         properties = json.loads((self.work / "inventory.json").read_text())["properties"]
         clean = [p for p in properties if p not in ("Use distinctive domain names", "Make paths and exports say where code lives")]
         narrative = {"verdict": "Names are generic.", "method": "1 shard | sequential.",
-                     "property_checks": {p: "checked in every file read; no violation" for p in clean[1:]}}
+                     "property_checks": {p: "checked in every file read; no violation" for p in clean[1:]},
+                     "themes": [
+                         {"title": "Give invoice processing a domain name",
+                          "explanation": "The main operation is named process, so searches reach unrelated operations. Rename it to processInvoice.",
+                          "findings": [ids[0]], "packets": ["P-02"]},
+                         {"title": "Import the billing contract directly",
+                          "explanation": "A star export hides the owning module, so readers must open it to discover the contract. Remove the generic re-export.",
+                          "findings": [ids[1]], "packets": ["P-01"]},
+                     ]}
         (self.work / "narrative.json").write_text(json.dumps(narrative))
         out = run("measure", "--work", str(self.work))
         self.assertIn("2 packets", out)
@@ -211,14 +224,19 @@ class AuditFlow(unittest.TestCase):
         text = report.read_text()
         text.encode("ascii")
         for section in ("## 1. Verdict", "## 2. Repository map", "## 3. Coverage", "## 4. Heat grid",
-                        "## 5. Property ledger", "## 6. Search reach", "## 7. Findings",
+                        "## 5. Rubric scorecard", "## 6. Search reach", "## 7. Findings",
                         "## 8. Work packets", "## 9. Handoff", "## 10. Reconciliation ledger"):
             self.assertIn(section, text)
+        self.assertIn("DIMENSION SCORES", text)
+        self.assertIn("Names & vocabulary", text)
         for finding_id in ids:
             self.assertIn(f"### {finding_id} -", text)
         self.assertIn("### P-01 -", text)
         self.assertIn("### P-02 -", text)
         self.assertIn("### F-001 - HIGH", text)
+        self.assertIn("**HIGH:** A domain search cannot reach the concept's owner or contract.", text)
+        self.assertIn("**MED:** Search reaches the owner or contract only after extra reads or context reconstruction.", text)
+        self.assertIn("**LOW:** Search succeeds, but inconsistent names or structure still add friction.", text)
         self.assertIn("star re-export hides names", text)
         self.assertIn("proof", text)
         self.assertIn("README.md  (uncovered", text)
@@ -242,6 +260,77 @@ class AuditFlow(unittest.TestCase):
         self.assertEqual([f["id"] for f in audit["findings"]], ids)
         self.assertEqual(len(audit["dropped"]), 5)
         self.assertEqual(audit["problems"], [])
+        self.assertIsNone(audit["score"]["value"])
+        card = run("card", "--work", str(self.work), "--report", str(report.resolve()))
+        self.assertIn("GREPPABILITY AUDIT", card)
+        self.assertIn("SCORE  WITHHELD", card)
+        self.assertIn("TOP IMPROVEMENTS", card)
+        self.assertIn("Give invoice processing a domain name", card)
+        self.assertIn("─" * 78, card)
+        self.assertTrue(card.rstrip().endswith(f"Detailed audit   {report.resolve()}"))
+
+    def test_score_uses_worst_severity_per_property(self):
+        properties = AUDIT.rubric_headings(RUBRIC)
+        affected = {properties[0], properties[4], properties[11]}
+        inventory = {"properties": properties}
+        findings = [
+            {"property": properties[0], "severity": "MED"},
+            {"property": properties[0], "severity": "LOW"},
+            {"property": properties[4], "severity": "MED"},
+            {"property": properties[11], "severity": "MED"},
+        ]
+        ledger = {"findings": findings, "files": [], "problems": [], "measure_problems": [],
+                  "unassigned_findings": []}
+        narrative = {"property_checks": {prop: "checked" for prop in properties if prop not in affected},
+                     "properties_not_applicable": {}}
+        score = AUDIT.audit_score(inventory, ledger, narrative)
+        self.assertEqual(score["value"], 92)
+        self.assertEqual(score["clean"], 16)
+        self.assertEqual(score["affected"], 3)
+        self.assertEqual([dimension["value"] for dimension in score["dimensions"]], [88, 83, 100, 100, 100])
+        mapped = {prop for _, dimension_properties in AUDIT.DIMENSIONS for prop in dimension_properties}
+        self.assertEqual(set(properties), mapped)
+
+    def test_card_renders_complete_score_and_absolute_report_path(self):
+        properties = AUDIT.rubric_headings(RUBRIC)
+        affected = {properties[0], properties[4], properties[11]}
+        findings = [
+            {"id": "F-001", "property": properties[0], "severity": "MED", "path": "src/config.rs", "line": 10},
+            {"id": "F-002", "property": properties[4], "severity": "MED", "path": "src/overlay.rs", "line": 20},
+            {"id": "F-003", "property": properties[11], "severity": "MED", "path": "src/tui.rs", "line": 30},
+            {"id": "F-004", "property": properties[0], "severity": "LOW", "path": "src/tui.rs", "line": 40},
+        ]
+        files = [{"path": f"src/file-{index}.rs", "treatment": "read", "status": "read-in-full"} for index in range(34)]
+        ledger = {"findings": findings, "files": files, "problems": [], "measure_problems": [],
+                  "unassigned_findings": []}
+        narrative = {
+            "verdict": "Search reaches every owner, but three properties add avoidable reconstruction.",
+            "property_checks": {prop: "checked" for prop in properties if prop not in affected},
+            "properties_not_applicable": {},
+            "themes": [{"title": "Give owners domain-specific names",
+                        "explanation": "Several owner names need module context, so a reader opens extra files before finding the right owner. Split the TUI by responsibility.",
+                        "findings": [f["id"] for f in findings], "packets": ["P-01"]}],
+        }
+        score = AUDIT.audit_score({"properties": properties}, ledger, narrative)
+        audit = {
+            "repository": {"repo": "/repos/mdmanager", "head": "de72aec815b61234", "branch": "main", "dirty": []},
+            "narrative": narrative, "score": score, "findings": findings,
+            "packets": [{"id": "P-01", "title": "Give owners domain-specific names", "findings": [f["id"] for f in findings]}],
+            "trials": [], "files": files, "dropped": [], "problems": [],
+        }
+        (self.work / "audit.json").parent.mkdir(parents=True, exist_ok=True)
+        (self.work / "audit.json").write_text(json.dumps(audit))
+        report = self.work / "audit.md"
+        card = run("card", "--work", str(self.work), "--report", str(report.resolve()))
+        self.assertIn("SCORE  92   ●●●●●●●●●●●●●●●●○○○", card)
+        self.assertIn("16 of 19 properties clean", card)
+        self.assertIn("No high-risk findings · 4 improvements recommended", card)
+        self.assertIn("DIMENSION SCORES", card)
+        self.assertIn("Names & vocabulary           88   ●●●●●●●●●○", card)
+        self.assertIn("Ownership & layout           83   ●●●●●●●●○○", card)
+        self.assertIn("Contracts & boundaries      100   ●●●●●●●●●●", card)
+        self.assertIn("Give owners domain-specific names", card)
+        self.assertTrue(card.rstrip().endswith(f"Detailed audit   {report.resolve()}"))
 
 
 if __name__ == "__main__":
