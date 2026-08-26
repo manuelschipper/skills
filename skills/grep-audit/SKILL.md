@@ -1,6 +1,6 @@
 ---
 name: grep-audit
-description: "Exhaustive whole-repository greppability audit against the greppable rubric: every maintained project file enumerated, read in full, and reconciled into one evidence-rich Markdown report."
+description: "Exhaustive greppability audit against the greppable rubric, over the whole repository or one committed Git diff ending at the checked-out HEAD: every maintained file in scope enumerated, read in full, and reconciled into one evidence-rich Markdown report."
 disable-model-invocation: true
 ---
 
@@ -16,6 +16,25 @@ measure, render, and format the chat briefing. You do the judging. Run it by abs
 this skill's directory (`${CLAUDE_SKILL_DIR}/scripts/audit.py` in Claude Code). Artifact contracts
 are in [references/artifacts.md](references/artifacts.md).
 
+## Choose the scope
+
+Use the scope already stated in the request. A Git diff means the committed change from an explicit
+base to the checked-out `HEAD`; a pull request is one example. If the user asks for a diff, change,
+or pull request without naming its base, ask only for the base ref. Never infer one.
+
+When the request states neither whole-repository nor Git-diff scope, run this command, return its
+output in a fenced `text` block without surrounding prose, and wait for the answer:
+
+```text
+audit.py scope --repo .
+```
+
+For a Git diff, `--base BASE` goes on the `intro` and `inventory` commands below and the audited
+range is `merge-base(BASE, HEAD)..HEAD`. Before step 1 read
+[references/change-range.md](references/change-range.md): it owns what the script stops for, how
+unchanged files serve as context, how findings are scoped, and the narrower claim the report makes.
+Everything else in this file applies to both scopes.
+
 ## Introduce the audit
 
 Settle the report delivery mode from existing instructions, in this precedence:
@@ -26,70 +45,16 @@ Settle the report delivery mode from existing instructions, in this precedence:
   reports: use the known-destination ending below.
 - Otherwise use the question ending below.
 
-Reply with one fenced `text` block containing this introduction and exactly one ending. Substitute
-only `{repository}` and, when known, `{destination}`. Preserve the wording, wordmark, spacing, and
-rules; do not add prose before or after the block.
+Run exactly one command and return its output in a fenced `text` block without surrounding prose:
 
 ```text
-                        ██████  ██████  ███████ ██████
-                       ██       ██   ██ ██      ██   ██
-                       ██  ███  ██████  █████   ██████
-                       ██   ██  ██   ██ ██      ██
-                        ██████  ██   ██ ███████ ██
-
-                              GREPPABILITY AUDIT
-
-  A read-only audit of how easily coding agents can work in {repository}.
-
-  I will seed the repository's vocabulary from its README, documentation,
-  commands, filenames, and public code. As the readers inspect the code, they
-  will add internal concepts and alternate spellings those surfaces do not
-  reveal. Then I will check whether every term leads clearly to its
-  implementation, usage, rules, and tests.
-
-──────────────────────────────────────────────────────────────────────────────
-  HOW THE AUDIT WORKS
-
-  I will inspect the source, tests, configuration, scripts, schemas, and
-  documentation maintained by the project. Generated and third-party material
-  is identified separately.
-
-  Subagents will divide the reading when available. Nothing in the repository
-  will be modified. A deep audit may take a while.
-
-──────────────────────────────────────────────────────────────────────────────
-  WHAT YOU WILL GET
-
-  A visual health score, the most important improvements in plain language,
-  and a detailed Markdown report with the evidence and work packets a coding
-  agent needs to implement them.
-
-──────────────────────────────────────────────────────────────────────────────
+audit.py intro --repo . --question
+audit.py intro --repo . --destination /absolute/report/path.md
+audit.py intro --repo . --chat-only
 ```
 
-Question ending; wait for the answer:
-
-```text
-  ONE QUESTION BEFORE I START
-
-  Where should I store the detailed Markdown audit?
-```
-
-Known-destination ending; then continue:
-
-```text
-  REPORT DESTINATION
-
-  {destination}
-```
-
-Chat-only ending; then continue:
-
-```text
-  DELIVERY
-
-  Chat only · nothing will be stored
-```
+The script owns the wordmark, wording, width, repository-basename display, and ending. With
+`--question`, wait for the answer before continuing.
 
 Do not expose how a destination was or was not discovered, ask about formats, or ask the user to
 make method choices. Never guess, derive, or create a store. Nothing is written into the audited
@@ -107,16 +72,19 @@ repository.
 ## 1. Inventory
 
 ```
-audit.py inventory --repo . --work W [--scope PATH] [--override PREFIX=CLASS]
+audit.py inventory --repo . --work W [--base BASE] [--scope PATH] [--override PREFIX=CLASS]
 ```
 
 This enumerates every tracked and untracked-unignored file, classifies it (`source`, `test`,
 `config`, `script`, `schema`, `docs` are read in full; `generated` and `vendored` are
-boundary-checked; `data` and `binary` are listed), and plans directory-contiguous shards balanced
-by line count. Read its exclusion table: a maintained directory caught by a name rule (a domain
+boundary-checked; `data` and `binary` are listed), and plans line-balanced shards. With `--base`,
+only changed files get those treatments and are sharded; every other file is searchable context and
+never sharded. `--base` covers the whole delta, so it refuses `--scope`. A file beneath
+`scripts/`, `bin/`, or `tools/` is classed as `script` regardless of programming language. Read its
+exclusion table: a maintained directory caught by a name rule (a domain
 called `gen/`, maintained scripts under `build/`) is a coverage hole, so rerun with
 `--override PREFIX=CLASS` until every exclusion is truthful. Post the class table and shard count
-as the first progress update.
+as the first progress update by copying only the final `inventory:` line.
 
 ## 2. Seed vocabulary
 
@@ -139,7 +107,13 @@ pass it verbatim, including the embedded rubric.
 - Delegation unavailable or forbidden: walk the shards in order yourself, following the same
   prompt and writing the same artifact per shard, then continue.
 
-After each batch run `audit.py verify --work W`. It reconciles every artifact against its
+If a shard agent stops before completion, resume that same agent when the host supports resumption;
+its incremental artifact preserves completed files. Re-dispatch only when resumption is unavailable
+or fails.
+
+After each batch run `audit.py verify --work W`. A nonzero exit means findings were dropped,
+coverage remains incomplete, or verification found a problem; read its output and continue the
+recovery loop. It reconciles every artifact against its
 assignment, counts a shard that did not declare every rubric heading in `properties_checked` as
 having read nothing, drops findings whose evidence is not at `path:line` (two lines of slack) and
 exact duplicates with the same property, path, line, and evidence, assigns stable finding IDs, and
@@ -150,28 +124,31 @@ is pending. The audit is exhaustive only at zero uncovered files: read each unco
 yourself, complete its `S-NNr` artifact as the sequential path would (the file in `files_read`,
 every heading in `properties_checked`), and rerun `verify`. A file no context can read in full
 leaves the audit incomplete; `render` then stamps `Coverage : INCOMPLETE` in the header, and the
-result is reported as an incomplete audit, never as a whole-repository one.
+result is reported as an incomplete audit, never as a whole-repository or complete change-range one.
 
 ## 4. Cross-file pass
 
 With `W/ledger.json` in hand, investigate every `cross_shard_leads` entry and close every
-`vocabulary_additions` entry. Each discovered concept and spelling must become a concept or
-spelling in `W/vocabulary.json`, or appear under `rejected` with the discovered spellings and a
-one-line reason. Nothing readers discover may disappear silently.
+`vocabulary_additions` entry. An addition is closed when its concept name or any spelling joins a
+concept in `W/vocabulary.json`, or the concept is recorded under `rejected` with a one-line reason.
+The ledger reports unadopted spellings for review without forcing generic reader tokens into the
+canonical vocabulary. Nothing readers discover may disappear silently.
 
 Check what shards cannot see: the same definition in two files, import renames, test-to-source
 mirroring, whether each excluded directory's boundary is recorded in the agent guidance, and
-whether the repository records its search conventions at all. Write your own findings to
+whether the repository records its search conventions at all. In a change-range audit this pass
+also runs the context searches the change-range reference lists. Write your own findings to
 `W/shards/main.json` in the shard artifact shape. An undocumented internal concept that a product
 term cannot reach is evidence for a repository-memory or naming finding, not a reason to omit the
 concept.
 
-Run search trials over the reconciled vocabulary, including internal concepts. Search each spelling
-case-insensitively as a fixed substring so `organization` reaches `organizationId` and
-`OrganizationRepository`. Record all five `reach` keys: a proof path for a reached owner,
-production wiring, contract, tests, or intentional absence; `null` when the trial missed; and
-`"n/a"` only when that surface genuinely does not apply. Each proof must contain a spelling in its
-path or at the recorded line. File a finding for every `null` result.
+Run `audit.py trial --work W` over the reconciled vocabulary, including internal concepts. It
+drafts documentation and all five reach proofs from class-grouped, case-insensitive searches.
+Review every draft: keep or replace the proof path for a reached owner, production wiring,
+contract, tests, or intentional absence; use `null` when the trial missed and `"n/a"` only when the
+surface genuinely does not apply. Short and all-uppercase spellings use whole-word matching;
+longer spellings also reach compound identifiers such as `OrganizationRepository`. File a finding
+for every `null` result.
 
 Rerun `audit.py verify --work W` so `main.json` findings get stable IDs, then add the relevant
 accepted IDs to each concept's `findings` list. `audit.py measure` withholds the score when an
@@ -181,7 +158,8 @@ no accepted finding.
 ## 5. Packets and narrative
 
 Write `W/packets.json`: accepted finding IDs grouped by shared files and symbols into units the
-size of one bounded change, with `after` dependencies and argv-shaped accept checks. Titles state
+size of one bounded change, with `after` dependencies, optional repository-relative `creates`
+paths, and argv-shaped accept checks. Titles state
 the recommended action, not a question such as "choose" or "decide." A recipe is only ever a
 mechanical step; a fix that needs a design choice is a decision with options and a recommended
 option, and new names come from the vocabulary.
@@ -198,8 +176,9 @@ audit.py measure --work W
 audit.py render --work W --out W/audit.md
 ```
 
-`measure` counts every symbol's blast radius and every concept's hits across the inventory, checks
-proposed names for collisions, validates packets (unique IDs, argv accept checks), checks the
+`measure` exits nonzero until its reported problem count is zero. It counts every symbol's blast
+radius and every concept's hits across the inventory, checks proposed names for collisions,
+validates packets (unique IDs, argv accept checks), checks the
 property evidence and theme coverage, and orders the packets; it recomputes its problems on every
 run. `render` writes the detailed Markdown report with the same fixed GREP wordmark, audit title,
 and purpose line as the introduction, followed by an opening verdict, a deterministic score,
@@ -207,7 +186,8 @@ plain-language severity definitions, ASCII maps, full evidence cards for every s
 handoff, and coverage ledger.
 The score averages the worst accepted severity per applicable rubric property: clean `1.00`, LOW
 `0.75`, MED `0.50`, HIGH `0.00`, rounded to the nearest integer. Multiple findings on one property
-do not stack; the finding counts show volume. Incomplete coverage, reconciliation problems,
+do not stack; the finding counts show volume. In a change-range audit only `change`-scope findings
+count and the score is labelled change scope. Incomplete coverage, reconciliation problems,
 unassigned findings, or an unverified property withhold the score instead of silently discounting
 it. The same credits roll up mechanically into five dimensions: Names & vocabulary, Ownership &
 layout, Contracts & boundaries, Execution flow, and Tests & repository memory. `render` records each
@@ -259,5 +239,5 @@ storage is prohibited, return the detailed Markdown as already specified instead
 
 ## Progress updates
 
-One line each: the class table and shard count after the inventory, the `coverage:` line after
-every `verify`, and the `report:` line after `render`. Nothing else interrupts the audit.
+One line each: the final `inventory:` line after inventory, the `coverage:` line after every
+`verify`, and the `report:` line after `render`. Nothing else interrupts the audit.

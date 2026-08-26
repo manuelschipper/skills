@@ -2,10 +2,12 @@
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "audit.py"
@@ -33,9 +35,15 @@ FILES = {
 }
 
 
-def run(*args, cwd=None):
-    result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, cwd=cwd)
-    if result.returncode != 0:
+def invoke(*args, cwd=None):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args], capture_output=True, text=True, cwd=cwd, check=False
+    )
+
+
+def run(*args, cwd=None, expect=0):
+    result = invoke(*args, cwd=cwd)
+    if result.returncode != expect:
         raise AssertionError(f"{' '.join(args)}\n{result.stdout}\n{result.stderr}")
     return result.stdout
 
@@ -82,16 +90,84 @@ class AuditFlow(unittest.TestCase):
         self.assertEqual(assigned, sorted(f["path"] for f in inventory["files"] if f["treatment"] == "read"))
         self.assertGreater(len(shards), 1)
 
+    def test_shard_planning_balances_an_oversized_file(self):
+        files = [{"path": "huge.py", "lines": 1500}] + [
+            {"path": f"small-{index}.py", "lines": 100} for index in range(10)
+        ]
+        shards = AUDIT.plan_shards(files, 500)
+        self.assertEqual(len(shards), 5)
+        small_loads = [shard["lines"] for shard in shards if "huge.py" not in shard["files"]]
+        self.assertLessEqual(max(small_loads) - min(small_loads), 100)
+
+    def test_intro_preserves_dynamic_values_and_layout(self):
+        repository = "intro-repo-7"
+        destination = "/tmp/intro-contract-audit.md"
+        out = run("intro", "--repo", f"/very/long/path/{repository}", "--destination", destination)
+        lines = out.splitlines()
+        self.assertEqual(out.count(repository), 1)
+        self.assertEqual(out.count(destination), 1)
+        self.assertEqual(lines[-1].strip(), destination)
+        self.assertLessEqual(max(map(len, lines)), 78)
+        base = "origin/release-2026.08"
+        ranged = run("intro", "--repo", f"/very/long/path/{repository}", "--base", base, "--chat-only")
+        self.assertEqual(ranged.count(f"{base}..HEAD"), 1)
+        self.assertEqual(ranged.count(repository), 1)
+        self.assertLessEqual(max(map(len, ranged.splitlines())), 78)
+        self.assertNotEqual(ranged, out)
+
+    def test_scope_question_presents_two_bounded_choices(self):
+        repository = "scope-repo-11"
+        out = run("scope", "--repo", f"/work/{repository}")
+        lines = out.splitlines()
+        choices = [line for line in lines if line.startswith(("  1  ", "  2  "))]
+        self.assertEqual(len(choices), 2)
+        self.assertEqual(out.count(repository), 1)
+        self.assertLessEqual(max(map(len, lines)), 78)
+
+    def test_whole_repository_ignores_finding_scope(self):
+        inventory = self.inventory("--shard-lines", "100000")
+        self.assertIsNone(inventory["range"])
+        self.assertEqual({file["treatment"] for file in inventory["files"]} & {"context"}, set())
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        finding = {
+            "property": "Use distinctive domain names", "severity": "MED", "path": "src/billing/invoice.ts", "line": 1,
+            "evidence": "export function process(input) {", "observation": "generic verb", "symbol": "process",
+            "recipe": ["rename"], "scope": "follow-up", "traces_to": "src/billing/invoice.ts",
+        }
+        (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(self.artifact(shard, shard["files"], [], [finding])))
+        run("verify", "--work", str(self.work))
+        ledger = json.loads((self.work / "ledger.json").read_text())
+        self.assertEqual(len(ledger["findings"]), 1)
+        self.assertNotIn("scope", ledger["findings"][0])
+        self.assertNotIn("traces_to", ledger["findings"][0])
+        narrative = {"property_checks": {p: "checked" for p in inventory["properties"][1:]}, "properties_not_applicable": {}}
+        score = AUDIT.audit_score(inventory, ledger, narrative)
+        self.assertEqual((score["scope"], score["affected"]), ("repository", 1))
+
     def test_override_rescues_misclassified_directory(self):
         inventory = self.inventory("--override", "gen=source")
         by_path = {f["path"]: f for f in inventory["files"]}
         self.assertEqual(by_path["gen/domain.ts"]["treatment"], "read")
 
+    def test_override_warns_when_prefix_matches_nothing(self):
+        result = invoke("inventory", "--repo", str(self.repo), "--work", str(self.work), "--rubric", str(RUBRIC),
+                        "--override", "missing=source")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("warning: --override prefix matches no inventory path: missing", result.stderr)
+
     def test_work_dir_inside_repo_is_refused(self):
         result = subprocess.run([sys.executable, str(SCRIPT), "inventory", "--repo", str(self.repo), "--work",
-                                 str(self.repo / "work"), "--rubric", str(RUBRIC)], capture_output=True, text=True)
+                                 str(self.repo / "work"), "--rubric", str(RUBRIC)], capture_output=True, text=True,
+                                check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.repo / "work").exists())
+
+    def test_shard_prompt_names_missing_seed_step(self):
+        self.inventory()
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        result = invoke("shard-prompt", "--work", str(self.work), "--shard", shard["id"])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing vocabulary.json (run seed vocabulary (step 2))", result.stderr)
 
     def artifact(self, shard, read, skipped, findings, declare=True):
         properties = json.loads((self.work / "inventory.json").read_text())["properties"]
@@ -104,7 +180,7 @@ class AuditFlow(unittest.TestCase):
         self.inventory("--shard-lines", "100000")
         shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
         (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(self.artifact(shard, shard["files"], [], [], declare=False)))
-        out = run("verify", "--work", str(self.work))
+        out = run("verify", "--work", str(self.work), expect=1)
         self.assertIn("read 0/", out)
         self.assertIn("properties not declared checked", out)
         shards = json.loads((self.work / "shards.json").read_text())["shards"]
@@ -125,20 +201,48 @@ class AuditFlow(unittest.TestCase):
         artifact.write_text(json.dumps(self.artifact(shard, shard["files"], [], [])))
         self.assertIn("(100%)", run("verify", "--work", str(self.work)))
         artifact.unlink()
-        out = run("verify", "--work", str(self.work))
+        out = run("verify", "--work", str(self.work), expect=1)
         self.assertIn("read 0/", out)
         self.assertEqual(json.loads((self.work / "shards.json").read_text())["shards"][0]["status"], "pending")
         artifact.write_text("{not json")
-        out = run("verify", "--work", str(self.work))
+        out = run("verify", "--work", str(self.work), expect=1)
         self.assertIn("read 0/", out)
         self.assertIn("not valid JSON", out)
+
+    def test_finding_ids_survive_later_findings_and_wrapped_evidence(self):
+        self.inventory("--shard-lines", "100000")
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        first = {
+            "property": "Use distinctive domain names", "severity": "MED", "path": "src/billing/invoice.ts", "line": 1,
+            "evidence": "export function process(input) { return normalize(input);", "observation": "generic operation",
+            "symbol": "process", "new_symbol": "processInvoice", "recipe": ["rename the operation"],
+        }
+        (self.work / "shards" / f"{shard['id']}.json").write_text(
+            json.dumps(self.artifact(shard, shard["files"], [], [first]))
+        )
+        run("verify", "--work", str(self.work))
+        original_id = json.loads((self.work / "ledger.json").read_text())["findings"][0]["id"]
+        earlier_path = {
+            "property": "Record repository-wide search conventions", "severity": "LOW", "path": "README.md", "line": 1,
+            "evidence": "# Demo", "observation": "search guidance is absent", "recipe": ["add search guidance"],
+            "accept": [{"argv": ["git", "grep", "-n", "search", "--", "README.md"], "expect": "one guide"}],
+        }
+        (self.work / "shards" / "main.json").write_text(json.dumps({
+            "shard": "main", "findings": [earlier_path], "cross_shard_leads": [], "vocabulary_additions": []
+        }))
+        run("verify", "--work", str(self.work))
+        findings = json.loads((self.work / "ledger.json").read_text())["findings"]
+        self.assertEqual(next(finding["id"] for finding in findings if finding["path"].startswith("src/")), original_id)
+        self.assertEqual(len({finding["id"] for finding in findings}), 2)
 
     def test_full_flow_reconciles_verifies_measures_and_renders(self):
         self.inventory("--shard-lines", "100000")
         shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [], "rejected": []}))
         prompt = run("shard-prompt", "--work", str(self.work), "--shard", shard["id"])
         self.assertIn("## Rubric", prompt)
         self.assertIn("src/billing/invoice.ts", prompt)
+        self.assertEqual(prompt.count(str(self.work / "shards" / f"{shard['id']}.json")), 1)
         good = {
             "property": "Use distinctive domain names", "severity": "HIGH", "path": "src/billing/invoice.ts", "line": 1,
             "evidence": "export function process(input) {", "observation": "generic verb without its object",
@@ -154,7 +258,7 @@ class AuditFlow(unittest.TestCase):
             {"concept": "invoice", "spellings": ["invoice"], "paths": ["src/billing/invoice.ts:1"]}
         ]
         (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(artifact))
-        out = run("verify", "--work", str(self.work))
+        out = run("verify", "--work", str(self.work), expect=1)
         self.assertIn("RE-DISPATCH", out)
         ledger = json.loads((self.work / "ledger.json").read_text())
         self.assertEqual([f["id"] for f in ledger["findings"]], ["F-001"])
@@ -171,13 +275,13 @@ class AuditFlow(unittest.TestCase):
                           "recommendation": "Delete the generic re-export so billing owns the symbol."},
              "accept": [{"argv": ["git", "grep", "-n", "export \\*", "--", "src"], "expect": "0 hits"}]},
             dict(good)]}))
-        out = run("verify", "--work", str(self.work))
+        out = run("verify", "--work", str(self.work), expect=1)
         self.assertIn("uncovered 1", out)
         ledger = json.loads((self.work / "ledger.json").read_text())
         self.assertEqual(sorted(f["shard"] for f in ledger["findings"]), sorted(["main", shard["id"]]))
         # The main-pass copy of `good` is an exact duplicate and must not get a second ID.
         self.assertEqual(len(ledger["findings"]), 2)
-        self.assertTrue(any(d["reason"].startswith("duplicate of") for d in ledger["dropped"]))
+        self.assertTrue(any("duplicate key (property, path, line, normalized evidence)" in d["reason"] for d in ledger["dropped"]))
         self.assertEqual(next(f for f in ledger["files"] if f["path"] == "README.md")["status"], "uncovered")
         (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [
             {"concept": "organization", "spellings": ["organization"], "documented": "README.md:2",
@@ -186,7 +290,8 @@ class AuditFlow(unittest.TestCase):
         ids = [f["id"] for f in ledger["findings"]]
         packets = {"packets": [
             {"id": "P-02", "title": "Rename process", "findings": ids[:1], "after": ["P-01"], "accept": []},
-            {"id": "P-01", "title": "Own utils", "findings": ids[1:], "after": [], "accept": [{"argv": ["git", "grep", "-n", "export \\*"], "expect": "0 hits"}]}]}
+            {"id": "P-01", "title": "Own utils", "findings": ids[1:], "after": [], "creates": ["AGENTS.md"],
+             "accept": [{"argv": ["git", "grep", "-n", "export \\*"], "expect": "0 hits"}]}]}
         (self.work / "packets.json").write_text(json.dumps(packets))
         properties = json.loads((self.work / "inventory.json").read_text())["properties"]
         clean = [p for p in properties if p not in ("Use distinctive domain names", "Make paths and exports say where code lives")]
@@ -201,7 +306,7 @@ class AuditFlow(unittest.TestCase):
                           "findings": [ids[1]], "packets": ["P-01"]},
                      ]}
         (self.work / "narrative.json").write_text(json.dumps(narrative))
-        out = run("measure", "--work", str(self.work))
+        out = run("measure", "--work", str(self.work), expect=1)
         self.assertIn("2 packets", out)
         self.assertIn("packet P-02: accept must be a non-empty list", out)
         self.assertIn("path not in inventory: missing/file.ts", out)
@@ -230,46 +335,19 @@ class AuditFlow(unittest.TestCase):
         self.assertEqual(blast["files"], 3)
         self.assertEqual(blast["new_symbol_hits"], 0)
         self.assertEqual([p["id"] for p in ledger["packets"]], ["P-01", "P-02"])
+        self.assertIn("AGENTS.md", ledger["packets"][0]["files"])
         self.assertEqual(ledger["trials"][0]["reach"]["absence"]["mark"], "-")
         self.assertEqual(ledger["trials"][1]["documented"]["mark"], " ")
         self.assertEqual(ledger["measure_problems"], [])
         report = self.work / "audit.md"
         out = run("render", "--work", str(self.work), "--out", str(report))
         text = report.read_text()
-        self.assertTrue(text.startswith("```text\n" + AUDIT.GREP_WORDMARK))
-        self.assertIn(AUDIT.GREP_WORDMARK, (SCRIPT.parent.parent / "SKILL.md").read_text())
-        self.assertIn("GREPPABILITY AUDIT", text)
-        self.assertIn("A read-only audit of how easily coding agents can work in repo.", text)
-        for section in ("## 1. Verdict", "## 2. Repository map", "## 3. Coverage", "## 4. Heat grid",
-                        "## 5. Rubric scorecard", "## 6. Search reach", "## 7. Findings",
-                        "## 8. Work packets", "## 9. Handoff", "## 10. Reconciliation ledger"):
-            self.assertIn(section, text)
-        self.assertIn("DIMENSION SCORES", text)
-        self.assertIn("Names & vocabulary", text)
-        for finding_id in ids:
-            self.assertIn(f"### {finding_id} -", text)
-        self.assertIn("### P-01 -", text)
-        self.assertIn("### P-02 -", text)
-        self.assertIn("### F-001 - HIGH", text)
-        self.assertIn("**HIGH:** A domain search cannot reach the concept's owner or contract.", text)
-        self.assertIn("**MED:** Search reaches the owner or contract only after extra reads or context reconstruction.", text)
-        self.assertIn("**LOW:** Search succeeds, but inconsistent names or structure still add friction.", text)
-        self.assertIn("star re-export hides names", text)
-        self.assertIn("proof", text)
-        self.assertIn("vocabulary additions: 1", text)
-        self.assertIn("README.md  (uncovered", text)
-        self.assertIn("scale: one # =", text)
-        self.assertIn("**Coverage:** INCOMPLETE: 1 uncovered", text)
-        self.assertIn("incomplete: 1 uncovered", out)
-        self.assertIn("git grep -n ' as ' -- '*.ts' = 0", text)
-        self.assertIn("1 shard \\| sequential.", text)
-        self.assertNotIn("UNVERIFIED", text)
-        self.assertNotIn("audit.json", text)
-        self.assertIn("report:", out)
-        self.assertIn("branded UTF-8 header and ASCII visuals", out)
-        self.assertNotIn("data:", out)
+        lines = text.splitlines()
+        self.assertEqual(len([line for line in lines if line.startswith("## ")]), 10)
+        self.assertEqual(len([line for line in lines if line.startswith("### F-")]), len(ids))
+        self.assertEqual(len([line for line in lines if line.startswith("### P-")]), 2)
         in_fence = False
-        for line in text.splitlines():
+        for line in lines:
             if line.startswith("```"):
                 in_fence = not in_fence
             elif in_fence:
@@ -281,12 +359,12 @@ class AuditFlow(unittest.TestCase):
         self.assertEqual(audit["problems"], [])
         self.assertIsNone(audit["score"]["value"])
         card = run("card", "--work", str(self.work), "--report", str(report.resolve()))
-        self.assertIn("GREPPABILITY AUDIT", card)
-        self.assertIn("SCORE  WITHHELD", card)
-        self.assertIn("TOP IMPROVEMENTS", card)
-        self.assertIn("Give invoice processing a domain name", card)
-        self.assertIn("─" * 78, card)
-        self.assertTrue(card.rstrip().endswith(f"Detailed audit   {report.resolve()}"))
+        card_lines = card.rstrip().splitlines()
+        separators = [line for line in card_lines if line and set(line) == {"─"}]
+        self.assertEqual(len(separators), 4)
+        self.assertTrue(all(len(line) == 78 for line in separators))
+        self.assertLessEqual(max(map(len, card_lines)), 78)
+        self.assertTrue(card_lines[-1].endswith(str(report.resolve())))
 
     def test_measure_rejects_open_or_untrialed_vocabulary(self):
         self.inventory("--shard-lines", "100000")
@@ -311,8 +389,8 @@ class AuditFlow(unittest.TestCase):
         }
         (self.work / "narrative.json").write_text(json.dumps(narrative))
         (self.work / "packets.json").write_text(json.dumps({"packets": []}))
-        out = run("measure", "--work", str(self.work))
-        self.assertIn("unresolved addition invoice: invoice, bill", out)
+        out = run("measure", "--work", str(self.work), expect=1)
+        self.assertIn("unresolved addition invoice", out)
         self.assertIn("not trialed: missing reach wiring, contract, tests, absence", out)
         self.assertIn("proof contains none of its spellings", out)
         inventory = json.loads((self.work / "inventory.json").read_text())
@@ -324,16 +402,44 @@ class AuditFlow(unittest.TestCase):
             "owner": "migrations/001_init.sql", "wiring": "n/a", "contract": "n/a",
             "tests": "n/a", "absence": "n/a",
         }
-        vocabulary["rejected"] = [{
-            "concept": "invoice", "spellings": ["invoice", "bill"],
-            "reason": "The shard reported a feature word already covered by the billing boundary.",
-        }]
+        vocabulary["concepts"].append({
+            "concept": "invoice", "spellings": ["invoice"], "documented": None,
+            "reach": {"owner": "src/billing/invoice.ts", "wiring": "n/a", "contract": "n/a",
+                      "tests": "tests/billing/invoice.test.ts", "absence": "n/a"},
+            "findings": [],
+        })
         (self.work / "vocabulary.json").write_text(json.dumps(vocabulary))
         out = run("measure", "--work", str(self.work))
         self.assertIn("problems 0", out)
         ledger = json.loads((self.work / "ledger.json").read_text())
-        self.assertEqual(ledger["vocabulary_rejected"][0]["concept"], "invoice")
+        resolution = ledger["vocabulary_resolutions"][0]
+        self.assertEqual((resolution["disposition"], resolution["target"]), ("merged", "invoice"))
+        self.assertEqual(resolution["unadopted"], ["bill"])
         self.assertEqual(AUDIT.audit_score(inventory, ledger, narrative)["value"], 100)
+
+    def test_measure_names_the_missing_stage_artifact(self):
+        self.inventory("--shard-lines", "100000")
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        (self.work / "shards" / f"{shard['id']}.json").write_text(
+            json.dumps(self.artifact(shard, shard["files"], [], []))
+        )
+        run("verify", "--work", str(self.work))
+        (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [], "rejected": []}))
+        result = invoke("measure", "--work", str(self.work))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("missing packets.json (run packets and narrative (step 5))", result.stderr)
+        (self.work / "packets.json").write_text(json.dumps({"packets": [{}]}))
+        properties = json.loads((self.work / "inventory.json").read_text())["properties"]
+        (self.work / "narrative.json").write_text(json.dumps({
+            "verdict": "No findings.", "method": "sequential", "themes": [],
+            "property_checks": {property_name: "checked" for property_name in properties},
+        }))
+        out = run("measure", "--work", str(self.work), expect=1)
+        self.assertIn("packet entry 1: needs a non-empty id", out)
+        (self.work / "vocabulary.json").write_text("{")
+        result = invoke("trial", "--work", str(self.work))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("invalid JSON in vocabulary.json at line 1, column 2", result.stderr)
 
     def test_vocabulary_search_finds_compound_identifiers(self):
         path = self.repo / "src" / "organization-runtime.ts"
@@ -343,6 +449,25 @@ class AuditFlow(unittest.TestCase):
         hits = AUDIT.grep_hits(self.repo, "organization", by_path, whole_word=False)
         self.assertIn("src/organization-runtime.ts:1", hits)
         self.assertIn("src/organization-runtime.ts:2", hits)
+
+    def test_trial_drafts_all_surfaces_and_short_proofs_need_whole_words(self):
+        self.inventory()
+        (self.work / "vocabulary.json").write_text(json.dumps({
+            "concepts": [{"concept": "organization", "spellings": ["organization"], "findings": []}],
+            "rejected": [],
+        }))
+        out = run("trial", "--work", str(self.work))
+        self.assertIn("filled 6 draft proofs", out)
+        concept = json.loads((self.work / "vocabulary.json").read_text())["concepts"][0]
+        self.assertEqual(set(concept["reach"]), {"owner", "wiring", "contract", "tests", "absence"})
+        self.assertEqual(concept["documented"], "README.md:2")
+        (self.repo / "README.md").write_text("This audit is deliberately slow.\n")
+        inventory = json.loads((self.work / "inventory.json").read_text())
+        by_path = {file["path"]: file for file in inventory["files"]}
+        self.assertEqual(
+            AUDIT.proof_error(self.repo, "README.md:1", ["LOW"], by_path),
+            "proof contains none of its spellings: README.md:1",
+        )
 
     def test_score_uses_worst_severity_per_property(self):
         properties = AUDIT.rubric_headings(RUBRIC)
@@ -365,8 +490,10 @@ class AuditFlow(unittest.TestCase):
         self.assertEqual([dimension["value"] for dimension in score["dimensions"]], [88, 83, 100, 100, 100])
         mapped = {prop for _, dimension_properties in AUDIT.DIMENSIONS for prop in dimension_properties}
         self.assertEqual(set(properties), mapped)
+        narrative["property_checks"].pop(properties[1])
+        self.assertIsNone(AUDIT.audit_score(inventory, ledger, narrative)["value"])
 
-    def test_card_renders_complete_score_and_absolute_report_path(self):
+    def test_card_preserves_visual_counts_and_absolute_report_path(self):
         properties = AUDIT.rubric_headings(RUBRIC)
         affected = {properties[0], properties[4], properties[11]}
         findings = [
@@ -378,11 +505,12 @@ class AuditFlow(unittest.TestCase):
         files = [{"path": f"src/file-{index}.rs", "treatment": "read", "status": "read-in-full"} for index in range(34)]
         ledger = {"findings": findings, "files": files, "problems": [], "measure_problems": [],
                   "unassigned_findings": []}
+        theme_title = "Give owners domain-specific names"
         narrative = {
             "verdict": "Search reaches every owner, but three properties add avoidable reconstruction.",
             "property_checks": {prop: "checked" for prop in properties if prop not in affected},
             "properties_not_applicable": {},
-            "themes": [{"title": "Give owners domain-specific names",
+            "themes": [{"title": theme_title,
                         "explanation": "Several owner names need module context, so a reader opens extra files before finding the right owner. Split the TUI by responsibility.",
                         "findings": [f["id"] for f in findings], "packets": ["P-01"]}],
         }
@@ -390,22 +518,413 @@ class AuditFlow(unittest.TestCase):
         audit = {
             "repository": {"repo": "/repos/mdmanager", "head": "de72aec815b61234", "branch": "main", "dirty": []},
             "narrative": narrative, "score": score, "findings": findings,
-            "packets": [{"id": "P-01", "title": "Give owners domain-specific names", "findings": [f["id"] for f in findings]}],
+            "packets": [{"id": "P-01", "title": theme_title, "findings": [f["id"] for f in findings]}],
             "trials": [], "files": files, "dropped": [], "problems": [],
         }
         (self.work / "audit.json").parent.mkdir(parents=True, exist_ok=True)
         (self.work / "audit.json").write_text(json.dumps(audit))
         report = self.work / "audit.md"
         card = run("card", "--work", str(self.work), "--report", str(report.resolve()))
-        self.assertIn("SCORE  92   ●●●●●●●●●●●●●●●●○○○", card)
-        self.assertIn("16 of 19 properties clean", card)
-        self.assertIn("No high-risk findings · 4 improvements recommended", card)
-        self.assertIn("DIMENSION SCORES", card)
-        self.assertIn("Names & vocabulary           88   ●●●●●●●●●○", card)
-        self.assertIn("Ownership & layout           83   ●●●●●●●●○○", card)
-        self.assertIn("Contracts & boundaries      100   ●●●●●●●●●●", card)
-        self.assertIn("Give owners domain-specific names", card)
-        self.assertTrue(card.rstrip().endswith(f"Detailed audit   {report.resolve()}"))
+        lines = card.rstrip().splitlines()
+        property_rows = [line for line in lines if line.count("●") + line.count("○") == score["applicable"]]
+        self.assertEqual(len(property_rows), 1)
+        self.assertEqual(property_rows[0].count("●"), score["clean"])
+        self.assertEqual(property_rows[0].count("○"), score["affected"])
+        dimension_rows = [line for line in lines if line.count("●") + line.count("○") == 10]
+        self.assertEqual(len(dimension_rows), len(score["dimensions"]))
+        for row, dimension in zip(dimension_rows, score["dimensions"], strict=True):
+            expected_filled = int(10 * dimension["value"] / 100 + 0.5)
+            self.assertEqual(row.count("●"), expected_filled)
+            self.assertEqual(row.count("○"), 10 - expected_filled)
+        self.assertEqual(card.count(theme_title), 1)
+        self.assertLessEqual(max(map(len, lines)), 78)
+        self.assertTrue(lines[-1].endswith(str(report.resolve())))
+
+
+class ChangeRangeFlow(unittest.TestCase):
+    """A feature branch whose base moved on: the audited delta is merge-base..HEAD, never base..HEAD."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.repo = root / "repo"
+        self.work = root / "work"
+        for rel, text in FILES.items():
+            path = self.repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        self.git("init", "-q", "-b", "main")
+        self.git("add", ".")
+        self.git("commit", "-qm", "init")
+        self.git("checkout", "-qb", "feature")
+        (self.repo / "src/billing/invoice.ts").write_text(
+            "export function processInvoice(input) {\n  return normalize(input);\n}\nexport function process(x) { return x; }\n"
+        )
+        self.git("mv", "src/shared/utils.ts", "src/shared/helpers.ts")
+        self.git("rm", "-q", "scripts/release.sh")
+        (self.repo / "generated/client.ts").write_text("// @generated by protoc, DO NOT EDIT\nexport const client = 1;\n")
+        (self.repo / "assets.png").write_bytes(b"\x89PNG\x00\x00")
+        (self.repo / "rates.csv").write_text("a,b\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "feature")
+        self.git("checkout", "-q", "main")
+        (self.repo / "README.md").write_text(FILES["README.md"] + "Main moved on.\n")
+        self.git("commit", "-qam", "main moves")
+        self.git("checkout", "-q", "feature")
+        self.base = self.git("rev-parse", "main")
+        self.merge_base = self.git("merge-base", "main", "HEAD")
+        self.head = self.git("rev-parse", "HEAD")
+        self.assertNotEqual(self.base, self.merge_base)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def inventory(self, *extra, base="main", expect=0):
+        result = invoke("inventory", "--repo", str(self.repo), "--work", str(self.work), "--rubric", str(RUBRIC),
+                        "--shard-lines", "100000", "--base", base, *extra)
+        self.assertEqual(result.returncode, expect, result.stdout + result.stderr)
+        return json.loads((self.work / "inventory.json").read_text()) if expect == 0 else result
+
+    def artifact(self, shard, findings, leads=()):
+        properties = json.loads((self.work / "inventory.json").read_text())["properties"]
+        return {"shard": shard["id"], "properties_checked": properties,
+                "files_read": [{"path": p, "lines": 1} for p in shard["files"]], "files_skipped": [],
+                "findings": findings, "cross_shard_leads": list(leads), "vocabulary_additions": []}
+
+    def finding(self, property_index, path, line, evidence, **extra):
+        properties = json.loads((self.work / "inventory.json").read_text())["properties"]
+        return {"property": properties[property_index], "severity": "MED", "path": path, "line": line,
+                "evidence": evidence, "observation": "generic name", "recipe": ["rename it"],
+                "accept": [{"argv": ["git", "grep", "-nw", "--", "process"], "expect": "0 hits"}], **extra}
+
+    def test_unresolved_base_no_merge_base_and_empty_range_write_nothing(self):
+        for base, token in (("no-such-ref", "no-such-ref"), ("HEAD", self.head[:12])):
+            result = self.inventory(base=base, expect=1)
+            self.assertIn(token, result.stderr)
+            self.assertFalse((self.work / "inventory.json").exists())
+        self.git("checkout", "-q", "--orphan", "solo")
+        self.git("commit", "-qm", "orphan", "--allow-empty")
+        self.git("checkout", "-q", "feature")
+        result = self.inventory(base="solo", expect=1)
+        self.assertIn(self.head[:12], result.stderr)
+        self.assertFalse((self.work / "inventory.json").exists())
+
+    def test_base_refuses_scope_and_writes_nothing(self):
+        result = self.inventory("--scope", "src/billing", expect=1)
+        self.assertNotEqual(result.stderr.strip(), "")
+        self.assertFalse((self.work / "inventory.json").exists())
+        self.assertFalse((self.work / "shards.json").exists())
+
+    def test_copy_of_an_unchanged_source_keeps_its_origin(self):
+        source, copy = "migrations/001_init.sql", "migrations/002_init_copy.sql"
+        (self.repo / copy).write_text((self.repo / source).read_text())
+        self.git("add", copy)
+        self.git("commit", "-qm", "copy an unchanged schema file")
+        inventory = self.inventory()
+        changes = {change["path"]: change for change in inventory["range"]["changed"]}
+        self.assertEqual((changes[copy]["status"], changes[copy]["old_path"]), ("C", source))
+        self.assertNotIn(source, changes)
+        by_path = {file["path"]: file for file in inventory["files"]}
+        self.assertEqual((by_path[copy]["treatment"], by_path[copy]["old_path"]), ("read", source))
+        self.assertEqual(by_path[source]["treatment"], "context")
+        self.assertEqual(changes["src/shared/helpers.ts"]["old_path"], "src/shared/utils.ts")
+        self.assertEqual(changes["scripts/release.sh"]["status"], "D")
+
+    def test_unsupported_changed_paths_stop_the_inventory(self):
+        self.git("update-index", "--add", "--cacheinfo", "160000,4b825dc642cb6eb9a060e54bf8d69288fbee4904,libs/dep")
+        (self.repo / "libs/dep").mkdir(parents=True)
+        (self.repo / "dangling").symlink_to("missing-target")
+        # A valid symlink resolves to a regular file, so is_file() alone would read the target in its place.
+        (self.repo / "alias.ts").symlink_to("src/billing/invoice.ts")
+        self.git("add", "dangling", "alias.ts")
+        self.git("commit", "-qm", "gitlink, dangling symlink, valid symlink")
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        result = self.inventory(expect=1)
+        for path in ("libs/dep", "dangling", "alias.ts"):
+            self.assertIn(path, result.stderr)
+        self.assertNotIn("src/billing/invoice.ts", result.stderr)
+        self.assertFalse((self.work / "inventory.json").exists())
+        self.git("rm", "-q", "--cached", "libs/dep")
+        self.git("rm", "-q", "dangling", "alias.ts")
+        self.git("commit", "-qm", "drop them")
+        inventory = self.inventory()
+        self.assertEqual({c["path"] for c in inventory["range"]["changed"] if c["status"] == "D"}, {"scripts/release.sh"})
+
+    def test_worktree_must_match_head_before_and_during_the_audit(self):
+        (self.repo / "src/billing/invoice.ts").write_text("export function edited() {}\n")
+        result = self.inventory(expect=1)
+        self.assertIn(self.head[:12], result.stderr)
+        self.assertFalse((self.work / "inventory.json").exists())
+        self.git("checkout", "--", "src/billing/invoice.ts")
+        (self.repo / "scratch.ts").write_text("export const scratch = 1;\n")
+        inventory = self.inventory()
+        self.assertNotIn("scratch.ts", {file["path"] for file in inventory["files"]})
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(self.artifact(shard, [])))
+        run("verify", "--work", str(self.work))
+        self.assertEqual(json.loads((self.work / "ledger.json").read_text())["problems"], [])
+        self.git("commit", "-qm", "moved", "--allow-empty")
+        run("verify", "--work", str(self.work), expect=1)
+        ledger = json.loads((self.work / "ledger.json").read_text())
+        self.assertEqual(len(ledger["problems"]), 1)
+        self.assertIn(self.head[:12], ledger["problems"][0])
+        self.assertIsNone(AUDIT.audit_score(inventory, ledger, {"property_checks": {}})["value"])
+
+    def test_range_records_shas_renames_deletes_and_listed_changes(self):
+        inventory = self.inventory()
+        audited = inventory["range"]
+        self.assertEqual(
+            (audited["base_input"], audited["base"], audited["merge_base"], audited["head"]),
+            ("main", self.base, self.merge_base, self.head),
+        )
+        by_status = {change["path"]: change for change in audited["changed"]}
+        self.assertEqual(by_status["src/shared/helpers.ts"]["old_path"], "src/shared/utils.ts")
+        self.assertEqual(by_status["src/shared/helpers.ts"]["status"], "R")
+        self.assertEqual(by_status["scripts/release.sh"]["status"], "D")
+        self.assertEqual(by_status["src/billing/invoice.ts"]["status"], "M")
+        by_path = {file["path"]: file for file in inventory["files"]}
+        self.assertNotIn("scripts/release.sh", by_path)
+        self.assertNotIn("README.md", by_status)
+        self.assertEqual(by_path["src/shared/helpers.ts"]["old_path"], "src/shared/utils.ts")
+        self.assertEqual(by_path["generated/client.ts"]["treatment"], "boundary")
+        self.assertEqual(by_path["assets.png"]["treatment"], "listed")
+        self.assertEqual(by_path["rates.csv"]["treatment"], "listed")
+        self.assertEqual({file["treatment"] for file in inventory["files"] if file["path"] in by_status} & {"context"}, set())
+        self.assertEqual(by_path["README.md"]["treatment"], "context")
+        self.assertEqual(by_path["tests/billing/invoice.test.ts"]["treatment"], "context")
+        shards = json.loads((self.work / "shards.json").read_text())["shards"]
+        self.assertEqual(sorted(p for s in shards for p in s["files"]), ["src/billing/invoice.ts", "src/shared/helpers.ts"])
+        (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [], "rejected": []}))
+        prompt = run("shard-prompt", "--work", str(self.work), "--shard", shards[0]["id"])
+        self.assertEqual(prompt.count("src/shared/utils.ts"), 2)
+        self.assertEqual(prompt.count("scripts/release.sh"), 1)
+        self.assertEqual(prompt.count(f"{self.merge_base[:12]}..{self.head[:12]}"), 1)
+
+    def test_context_is_searchable_but_never_coverage(self):
+        inventory = self.inventory()
+        by_path = {file["path"]: file for file in inventory["files"]}
+        self.assertIn("README.md:2", AUDIT.grep_hits(self.repo, "organization", by_path, whole_word=False))
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        finding = self.finding(0, "src/billing/invoice.ts", 4, "export function process(x)", symbol="process",
+                               scope="change", traces_to="src/billing/invoice.ts")
+        (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(self.artifact(shard, [finding])))
+        out = run("verify", "--work", str(self.work))
+        ledger = json.loads((self.work / "ledger.json").read_text())
+        readable = [file for file in ledger["files"] if file["treatment"] == "read"]
+        context = [file for file in ledger["files"] if file["treatment"] == "context"]
+        self.assertEqual(len(readable), 2)
+        self.assertEqual(len(context), len(inventory["files"]) - 5)
+        self.assertEqual({file["status"] for file in readable}, {"read-in-full"})
+        self.assertEqual({file["status"] for file in context}, {"context"})
+        self.assertIn(f"{len(readable)}/{len(readable)}", out)
+        self.assertIn(str(len(context)), out)
+        self.assertEqual(len(ledger["shards"]), 1)
+        (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [
+            {"concept": "organization", "spellings": ["organization"], "documented": "README.md:2",
+             "reach": {"owner": "migrations/001_init.sql", "wiring": "n/a", "contract": "n/a", "tests": "n/a", "absence": "n/a"},
+             "findings": []}], "rejected": []}))
+        (self.work / "shards" / "main.json").write_text(json.dumps({
+            "shard": "main", "findings": [], "vocabulary_additions": [],
+            "cross_shard_leads": [{"lead": "client.ts is emitted from the invoice module",
+                                   "paths": ["generated/client.ts", "src/billing/invoice.ts"]}],
+        }))
+        run("verify", "--work", str(self.work))
+        (self.work / "packets.json").write_text(json.dumps({"packets": [
+            {"id": "P-01", "title": "Rename process", "findings": ["F-001"], "after": [],
+             "accept": [{"argv": ["git", "grep", "-nw", "--", "process"], "expect": "0 hits"}]}]}))
+        properties = inventory["properties"]
+        (self.work / "narrative.json").write_text(json.dumps({
+            "verdict": "Generic verb.", "method": "1 shard.", "property_checks": {p: "checked" for p in properties[1:]},
+            "themes": [{"title": "Rename process", "explanation": "Generic. Rename.", "findings": ["F-001"], "packets": ["P-01"]}],
+        }))
+        run("measure", "--work", str(self.work))
+        ledger = json.loads((self.work / "ledger.json").read_text())
+        blast = ledger["findings"][0]["blast"]
+        # The symbol lives in two changed files and one unchanged test: context counts toward blast radius.
+        self.assertIn("tests/billing/invoice.test.ts:1", blast["paths"])
+        self.assertEqual(blast["files"], 3)
+        self.assertEqual(ledger["trials"][0]["reach"]["owner"]["mark"], "x")
+        self.assertEqual(ledger["trials"][0]["documented"]["mark"], "x")
+
+    def test_changed_boundary_file_needs_a_generator_lead(self):
+        inventory = self.inventory()
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(self.artifact(shard, [])))
+        run("verify", "--work", str(self.work))
+        (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [], "rejected": []}))
+        (self.work / "packets.json").write_text(json.dumps({"packets": []}))
+        (self.work / "narrative.json").write_text(json.dumps({
+            "verdict": "Clean.", "method": "1 shard.", "themes": [],
+            "property_checks": {p: "checked" for p in inventory["properties"]},
+        }))
+        out = run("measure", "--work", str(self.work), expect=1)
+        self.assertIn("generated/client.ts", out)
+        self.assertEqual(json.loads((self.work / "ledger.json").read_text())["measure_problems"][0].count("generated/client.ts"), 1)
+        # Naming only the boundary file, a path outside the inventory, or a non-maintained path verifies nothing.
+        for paths in (
+            ["generated/client.ts"],
+            ["generated/client.ts", "api.proto"],
+            ["generated/client.ts", "generated/api.ts", "vendor/lib.js", "rates.csv"],
+        ):
+            (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(self.artifact(
+                shard, [], leads=[{"lead": "generated from api.proto", "paths": paths}]
+            )))
+            run("verify", "--work", str(self.work))
+            run("measure", "--work", str(self.work), expect=1)
+            self.assertEqual(len(json.loads((self.work / "ledger.json").read_text())["measure_problems"]), 1, paths)
+        # An unchanged maintained context path is a valid verification target and stays context, not coverage.
+        (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(self.artifact(
+            shard, [], leads=[{"lead": "generated from the documented contract", "paths": ["generated/client.ts", "README.md"]}]
+        )))
+        run("verify", "--work", str(self.work))
+        run("measure", "--work", str(self.work))
+        ledger = json.loads((self.work / "ledger.json").read_text())
+        self.assertEqual(ledger["measure_problems"], [])
+        by_path = {file["path"]: file for file in ledger["files"]}
+        self.assertEqual((by_path["README.md"]["treatment"], by_path["README.md"]["status"]), ("context", "context"))
+        self.assertEqual(sum(file["status"] == "read-in-full" for file in ledger["files"]), len(shard["files"]))
+
+    def scoped_flow(self):
+        """Verify a mixed shard: two change findings, two follow-ups, and four that omit or misstate causality."""
+        inventory = self.inventory()
+        shard = json.loads((self.work / "shards.json").read_text())["shards"][0]
+        findings = [
+            self.finding(0, "src/billing/invoice.ts", 4, "export function process(x)",
+                         scope="change", traces_to="src/billing/invoice.ts"),
+            self.finding(1, "tests/billing/invoice.test.ts", 1, "import { process }",
+                         scope="change", traces_to="src/billing/invoice.ts"),
+            self.finding(2, "README.md", 2, "organization concept", scope="follow-up", traces_to="scripts/release.sh"),
+            self.finding(3, "README.md", 1, "# Demo"),
+            self.finding(4, "package.json", 1, "demo", scope="follow-up", traces_to="src/nowhere.ts"),
+            # A changed file gets no defaults: an untouched line needs both fields stated.
+            self.finding(5, "src/billing/invoice.ts", 2, "return normalize(input);", scope="follow-up"),
+            self.finding(6, "src/billing/invoice.ts", 2, "return normalize(input);",
+                         scope="follow-up", traces_to="src/billing/invoice.ts"),
+            self.finding(7, "src/billing/invoice.ts", 4, "export function process(x)", traces_to="src/billing/invoice.ts"),
+        ]
+        (self.work / "shards" / f"{shard['id']}.json").write_text(json.dumps(self.artifact(
+            shard, findings, leads=[{"lead": "emitted from the invoice module",
+                                     "paths": ["generated/client.ts", "src/billing/invoice.ts"]}]
+        )))
+        run("verify", "--work", str(self.work), expect=1)
+        return inventory, json.loads((self.work / "ledger.json").read_text())
+
+    def test_outside_diff_findings_count_and_follow_ups_do_not_lower_the_score(self):
+        inventory, ledger = self.scoped_flow()
+        self.assertEqual(len(ledger["dropped"]), 4)
+        self.assertEqual(
+            Counter(finding["path"] for finding in ledger["dropped"]),
+            {"README.md": 1, "package.json": 1, "src/billing/invoice.ts": 2},
+        )
+        self.assertTrue(all("scope" in f and "traces_to" in f for f in ledger["findings"]))
+        by_path = {(f["path"], f["line"]): f for f in ledger["findings"]}
+        self.assertEqual(by_path[("src/billing/invoice.ts", 4)]["scope"], "change")
+        self.assertEqual(by_path[("src/billing/invoice.ts", 4)]["traces_to"], "src/billing/invoice.ts")
+        self.assertEqual(by_path[("tests/billing/invoice.test.ts", 1)]["scope"], "change")
+        self.assertEqual(by_path[("README.md", 2)]["traces_to"], "scripts/release.sh")
+        self.assertEqual(by_path[("src/billing/invoice.ts", 2)]["traces_to"], "src/billing/invoice.ts")
+        self.assertEqual(sum(f["scope"] == "follow-up" for f in ledger["findings"]), 2)
+        properties = inventory["properties"]
+        narrative = {"property_checks": {p: "checked" for p in properties[2:]},
+                     "properties_not_applicable": {properties[10]: "no identity types in this change"}}
+        score = AUDIT.audit_score(inventory, ledger, narrative)
+        self.assertEqual(score["scope"], "change")
+        self.assertEqual((score["applicable"], score["affected"], score["clean"]), (18, 2, 16))
+        self.assertEqual(score["value"], 94)
+        without = {**ledger, "findings": [f for f in ledger["findings"] if f["scope"] == "change"]}
+        self.assertEqual(AUDIT.audit_score(inventory, without, narrative)["value"], score["value"])
+        change_ids = [f["id"] for f in ledger["findings"] if f["scope"] == "change"]
+        follow_ids = [f["id"] for f in ledger["findings"] if f["scope"] == "follow-up"]
+        (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [], "rejected": []}))
+        packets = {"packets": [{"id": "P-01", "title": "Rename process", "findings": change_ids + follow_ids[:1],
+                                "after": [], "accept": [{"argv": ["git", "grep", "-nw", "--", "process"], "expect": "0 hits"}]}]}
+        (self.work / "packets.json").write_text(json.dumps(packets))
+        (self.work / "narrative.json").write_text(json.dumps({
+            "verdict": "Generic verb.", "method": "1 shard.", **narrative,
+            "themes": [{"title": "Rename process", "explanation": "Generic. Rename.", "findings": change_ids, "packets": ["P-01"]}],
+        }))
+        out = run("measure", "--work", str(self.work), expect=1)
+        self.assertIn(follow_ids[0], out)
+        self.assertEqual(len(json.loads((self.work / "ledger.json").read_text())["measure_problems"]), 1)
+        packets["packets"][0]["findings"] = change_ids
+        (self.work / "packets.json").write_text(json.dumps(packets))
+        self.assertIn("0 findings unassigned", run("measure", "--work", str(self.work)))
+        self.assertEqual(json.loads((self.work / "ledger.json").read_text())["unassigned_findings"], [])
+
+    def test_report_and_card_state_the_change_scope(self):
+        inventory, ledger = self.scoped_flow()
+        change_ids = [f["id"] for f in ledger["findings"] if f["scope"] == "change"]
+        follow_ids = [f["id"] for f in ledger["findings"] if f["scope"] == "follow-up"]
+        properties = inventory["properties"]
+        (self.work / "vocabulary.json").write_text(json.dumps({"concepts": [], "rejected": []}))
+        (self.work / "packets.json").write_text(json.dumps({"packets": [
+            {"id": "P-01", "title": "Rename process", "findings": change_ids, "after": [],
+             "accept": [{"argv": ["git", "grep", "-nw", "--", "process"], "expect": "0 hits"}]}]}))
+        (self.work / "narrative.json").write_text(json.dumps({
+            "verdict": "Generic verb.", "method": "1 shard.", "property_checks": {p: "checked" for p in properties[2:]},
+            "properties_not_applicable": {properties[10]: "no identity types in this change"},
+            "themes": [{"title": "Rename process", "explanation": "Generic. Rename.", "findings": change_ids, "packets": ["P-01"]}],
+        }))
+        run("measure", "--work", str(self.work))
+        report = self.work / "audit.md"
+        run("render", "--work", str(self.work), "--out", str(report))
+        text = report.read_text()
+        lines = text.splitlines()
+        # Every full SHA appears in the header table and again in the coverage range block.
+        for sha in (self.base, self.merge_base, self.head):
+            self.assertEqual(text.count(sha), 2, sha)
+        header = "\n".join(line for line in lines[:30] if line.startswith("| "))
+        self.assertIn(f"`{self.merge_base}..{self.head}`", header)
+        self.assertIn(f"`{self.base}`", header)
+        self.assertEqual(text.count("`main`"), 1)
+        readable = sum(file["treatment"] == "read" for file in ledger["files"])
+        context = sum(file["treatment"] == "context" for file in ledger["files"])
+        listed = sum(file["treatment"] in ("boundary", "listed") for file in ledger["files"])
+        deleted = sum(change["status"] == "D" for change in inventory["range"]["changed"])
+        # The field table carries every coverage count as a number, whatever its labels say.
+        counts = Counter(int(n) for n in re.findall(r"(?<![\w`])\d+(?![\w`])", re.sub(r"`[^`]*`", "", header)))
+        for value in (readable, context, listed, deleted):
+            self.assertGreaterEqual(counts[value], 1, (value, counts))
+        cards = [line.split(" - ")[0][4:] for line in lines if line.startswith("### F-")]
+        self.assertEqual(cards, change_ids + follow_ids)
+        self.assertEqual(len([line for line in lines if line.startswith("## ")]), 10)
+        # Each finding card states the scope and trace the ledger holds for it, exactly once.
+        by_id = {f["id"]: f for f in ledger["findings"]}
+        for block in [block for block in text.split("\n### ")[1:] if block.startswith("F-")]:
+            finding = by_id[block.split(" - ")[0]]
+            self.assertEqual(
+                sum(finding["scope"] in line and finding["traces_to"] in line for line in block.splitlines()), 1, finding["id"]
+            )
+        self.assertEqual(sum("scripts/release.sh" in line for line in lines if line.startswith("    ")), 1)
+        self.assertNotIn("README.md", [line.split()[-1] for line in lines if line.startswith(("    read-in-full", "    context"))])
+        audit = json.loads((self.work / "audit.json").read_text())
+        self.assertEqual(audit["score"]["scope"], "change")
+        self.assertEqual(audit["score"]["value"], 94)
+        self.assertEqual(audit["range"]["merge_base"], self.merge_base)
+        card = run("card", "--work", str(self.work), "--report", str(report.resolve()))
+        card_lines = card.rstrip().splitlines()
+        self.assertLessEqual(max(map(len, card_lines)), 78)
+        self.assertEqual(len([line for line in card_lines if line and set(line) == {"─"}]), 4)
+        self.assertEqual(card.count(f"{self.merge_base[:12]}..{self.head[:12]}"), 1)
+        self.assertEqual(card.count(self.base[:12]), 1)
+        score_lines = [index for index, line in enumerate(card_lines) if line.strip().endswith(" 94")]
+        self.assertEqual(len(score_lines), 1)
+        # Two lines below the score, the status line counts scored findings and follow-ups as separate numbers.
+        status_numbers = sorted(map(int, re.findall(r"\d+", card_lines[score_lines[0] + 2])))
+        self.assertEqual(status_numbers, sorted([len(change_ids), len(follow_ids)]))
+        coverage = [line for line in card_lines if f"{readable}/{readable}" in line]
+        self.assertEqual(len(coverage), 1)
+        for value in (deleted, context):
+            self.assertIn(str(value), re.findall(r"\d+", coverage[0]))
+        self.assertTrue(card_lines[-1].endswith(str(report.resolve())))
+        whole = run("card", "--work", str(self.work), "--report", str(report.resolve()))
+        self.assertEqual(whole, card)
 
 
 if __name__ == "__main__":

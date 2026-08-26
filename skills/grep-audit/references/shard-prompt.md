@@ -1,6 +1,9 @@
-You are shard {{SHARD_ID}} of {{SHARD_COUNT}} in a whole-repository greppability audit of
-`{{REPO}}`. You are a read-only assessor: edit nothing, run no build or test commands, write
-nothing except the artifact file named below.
+You are shard {{SHARD_ID}} of {{SHARD_COUNT}} in {{AUDIT_KIND}}. You are a read-only assessor:
+edit nothing, run no build or test commands, write nothing except this artifact:
+
+`{{ARTIFACT}}`
+
+{{RANGE}}
 
 Read every file in your assignment in full, start to end, and assess it against every property of
 the rubric that follows. Search domain terms case-insensitively as fixed substrings so a term also
@@ -18,7 +21,10 @@ symbol search finds no collision.
 
 ## Artifact
 
-Write `{{ARTIFACT}}` as the structured JSON artifact below:
+Initialize the artifact from this structure before reading. After each file, immediately append
+that file to `files_read` or `files_skipped` and append its findings, leads, and vocabulary
+additions. Keep `properties_checked` present from initialization and complete it before declaring
+the shard finished. This incremental file is the recovery point if the host must resume you.
 
 ```json
 {
@@ -57,8 +63,9 @@ substitute for findings and concrete searches.
 
 Rules for findings:
 
-- `evidence` must appear verbatim at `path:line` (two lines of slack); findings whose evidence is
-  not found there are dropped.
+- `evidence` must appear within `path:line` plus two lines of slack. Verification normalizes
+  whitespace across that window, so a Markdown sentence may wrap differently while preserving its
+  words. Findings whose normalized evidence is absent are dropped.
 - Severity: HIGH when a domain search cannot reach the owner or the contract; MED when it reaches
   them only through extra reads; LOW when only consistency suffers.
 - Exactly one of `recipe` or `decision`: a `recipe` when the fix is mechanical (rename, move,

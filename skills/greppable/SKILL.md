@@ -180,9 +180,18 @@ contracts.
 Name tests and fixtures after the production concept. Colocate them when project conventions allow;
 otherwise mirror the source path so the same search finds behavior and verification.
 
-- Bad: `misc.test.ts` uses `sample.json` to cover notification retry behavior.
+Keep human-facing prose in its owning UI, README, or documentation file. Test the behavior,
+structure, dynamic values, and machine-readable contracts around that prose instead of copying full
+sentences into string assertions. Duplicated copy creates a second search hit that looks like an
+owner and makes wording changes pull unrelated tests into the reading set. Exact text belongs in a
+test only when the bytes are themselves the contract, such as a protocol token, error code,
+serialized format, or CLI flag.
+
+- Bad: `misc.test.ts` uses `sample.json` to cover notification retry behavior, or an onboarding
+  test copies a displayed paragraph into `assertIn(...)`.
 - Good: `notification-retry-policy.test.ts` and `notification-retry-policy.fixture.json` sit beside
-  or mirror `notification-retry-policy.ts`.
+  or mirror `notification-retry-policy.ts`; a rendering test checks the selected mode, supplied
+  destination, and width without restating the displayed prose.
 
 ### Record expected absence
 
