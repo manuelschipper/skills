@@ -16,21 +16,38 @@ measure, render. You do the judging. Run it by absolute path from this skill's d
 (`${CLAUDE_SKILL_DIR}/scripts/audit.py` in Claude Code). Artifact contracts are in
 [references/artifacts.md](references/artifacts.md).
 
+## Introduce the audit
+
+Before calling any tool, orient the user in plain language. Explain all of this:
+
+- Greppability is how easily an agent can find a concept's owner, production wiring, contract,
+  tests, and intentional absences by searching the repository's own domain words.
+- This is a deep, read-only audit of the whole repository. Every hand-written file is inventoried
+  and read, subagents divide the work when the environment supports them, and the audit may take
+  a while.
+- The result is one audit with two synchronized views generated together: a visual ASCII report
+  for a human to read and structured JSON with the same finding and work-packet IDs for another
+  agent to execute. The user is choosing where the audit lives, not which format to generate.
+
+Then settle storage, in this precedence:
+
+- Any applicable instruction, from the user, the environment, or the runtime, says not to store:
+  say that the visual report will be returned in the reply and nothing will be persisted.
+- The user named a destination, or the environment instructions name a system of record for
+  reports (a known notes molds project, for instance): name that destination and continue.
+- Otherwise ask: `Where should I keep the audit? Name a system of record or path, or say "chat
+  only" for no durable copy.` Then wait for the answer.
+
+Do not lead with filenames or ask the user to choose between text and JSON. Never guess, derive,
+or create a store. Nothing is written into the audited repository.
+
 ## Before reading any code
 
 1. Load the rubric in full: `greppable/SKILL.md` beside this skill's directory
    (`${CLAUDE_SKILL_DIR}/../greppable/SKILL.md` in Claude Code; `$greppable` in Codex). The
    property ledger is built from its `###` headings, so without that text there is no audit;
    stop and say so if it is missing.
-2. Settle storage, in this precedence:
-   - Any applicable instruction, from the user, the environment, or the runtime, says not to
-     store: the report goes in the reply only.
-   - The user named a destination, or the environment instructions name a system of record for
-     reports (a known notes molds project, for instance): use it with its own conventions.
-   - Otherwise ask where the report should live and wait for the answer. Never guess, derive,
-     or create a store.
-   In every case nothing is written into the audited repository.
-3. Choose the work directory `W`: the host's scratch directory, outside the repository. All
+2. Choose the work directory `W`: the host's scratch directory, outside the repository. All
    artifacts live there, so a later session resumes from `W` instead of starting over.
 
 ## 1. Inventory
