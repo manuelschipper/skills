@@ -1,6 +1,6 @@
 ---
 name: memento
-description: "Write the session note your future amnesiac self needs. Capture decisions with their reasoning chains, dead ends with why they failed, open questions, and durable anchors. Use when ending a session, when context runs low, or when preserving carry-forward state in a known molds notes project."
+description: "Write the session note your future amnesiac self needs. Capture decisions with their reasoning chains, dead ends with why they failed, open questions, and durable anchors. Use when ending a session, when context runs low, or when preserving carry-forward state."
 disable-model-invocation: true
 ---
 
@@ -23,17 +23,13 @@ Never persist secrets: redact tokens, keys, credentials, PII.
 
 ## Store the note
 
-If the notes molds project is already known, verify that it exists and use it as the tool of
-record:
+Use whatever system of record is correct in this environment. Verify that it exists; never
+guess, derive, or create one.
 
-- Address it explicitly with `--project`; never follow `.molds-project` for session notes.
-- Never write session notes into an sddr project or specification.
-- Never guess, derive, or create a notes project.
 - Read the latest relevant note before writing. Carry unresolved context forward and correct
   anything this session proved wrong.
-- Create one record per session titled `YYYY-MM-DD · TOPIC`. If the latest record is already
+- Create one note per session titled `YYYY-MM-DD · TOPIC`. If the latest note is already
   this session's note, update it instead of creating a duplicate.
-- Keep the default record state. Notes have no work lifecycle.
 
 Write these sections, using `None` only when a section is genuinely empty:
 
@@ -44,8 +40,8 @@ Write these sections, using `None` only when a section is genuinely empty:
 - `Durable Anchors`
 - `Next Step`
 
-If no known notes project exists, write a uniquely named, dated Markdown handoff under `/tmp`
-and report its exact path. If the user says what the next session is for, weight the note
-toward it and name the skills that session should invoke.
+If this environment defines no system of record, write a uniquely named, dated Markdown
+handoff under `/tmp` and report its exact path. If the user says what the next session is
+for, weight the note toward it and name the skills that session should invoke.
 
 End the note with the next step, then tell the user where you left it.

@@ -24,16 +24,12 @@ Store only the report; leave product files and implementation untouched.
 
 ## Store the report
 
-If a notes molds project is already known, verify that it exists and use it as the tool of
-record:
+Store one report per run, titled `YYYY-MM-DD · Dogfood · SUBJECT`, in whatever system of
+record is correct in this environment. Verify that it exists; never guess, derive, or create
+one.
 
-- Address it explicitly with `--project`; never follow `.molds-project`.
-- Never write the report into an sddr project or specification.
-- Never guess, derive, or create a notes project.
-- Create one default-state record per run titled `YYYY-MM-DD · Dogfood · SUBJECT`.
+If this environment defines no system of record, write the same report to a uniquely named,
+dated Markdown file under `/tmp`.
 
-If no known notes project exists, write the same report to a uniquely named, dated Markdown
-file under `/tmp`.
-
-Tell the user what it felt like, the ranked findings and recommendations, and the record ID
-or exact Markdown path.
+Tell the user what it felt like, the ranked findings and recommendations, and the report's
+identifier or exact Markdown path.

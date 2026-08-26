@@ -43,9 +43,9 @@ one line; never advance on a guess. When advancing, state the recorded response 
 first. A response may resolve, split, or moot later items: update the map and say so when
 N changes.
 
-Record durable responses in the established system of record when writes there are
-already authorized; otherwise keep them in context. A recommendation is advice, not
-permission to implement it.
+Store durable responses and the final readback in whatever system of record is correct in
+this environment when writes there are already authorized; otherwise keep them in context.
+A recommendation is advice, not permission to implement it.
 
 ## Close
 
