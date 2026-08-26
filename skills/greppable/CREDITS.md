@@ -1,0 +1,1 @@
+Based on Ben Vinegar's [How coding agents read your code (and how to write for them)](https://modem.dev/blog/how-coding-agents-read-your-code) and its MIT-licensed companion [`write-discoverable-code` skill](https://github.com/modem-dev/skills/blob/main/write-discoverable-code/SKILL.md).
