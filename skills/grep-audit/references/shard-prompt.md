@@ -3,18 +3,22 @@ You are shard {{SHARD_ID}} of {{SHARD_COUNT}} in a whole-repository greppability
 nothing except the artifact file named below.
 
 Read every file in your assignment in full, start to end, and assess it against every property of
-the rubric that follows. Search the repository with `git grep -nw` whenever a judgment needs the
-wider picture (how many hits a name has, whether a definition exists twice, whether a test mirrors a
-source file). Your assignment is complete only when every listed file is in `files_read` or
+the rubric that follows. Search domain terms case-insensitively as fixed substrings so a term also
+reaches compound identifiers; use whole-word searches for exact symbols. Your assignment is
+complete only when every listed file is in `files_read` or
 `files_skipped`; a skipped file needs a concrete reason and will be re-dispatched, so skip only
 what you truly cannot read.
 
-Use the repository's canonical vocabulary below when proposing names. Propose new names only when
-`git grep -w <new name>` returns nothing.
+The vocabulary below is a seed, not a limit. Put every domain concept absent from it in
+`vocabulary_additions`: internal services, workers, adapters, protocols, state machines,
+registries, and alternate spellings of a listed concept. Include the defining paths. The main pass
+will decide whether to add or reject each candidate; do not silently discard one as unimportant.
+Use the seed's canonical spellings when proposing names, and propose a new name only when an exact
+symbol search finds no collision.
 
 ## Artifact
 
-Write `{{ARTIFACT}}` as JSON with exactly this shape:
+Write `{{ARTIFACT}}` as the structured JSON artifact below:
 
 ```json
 {
@@ -47,8 +51,9 @@ Write `{{ARTIFACT}}` as JSON with exactly this shape:
 }
 ```
 
-`properties_checked` is your declaration that every listed file was assessed against every
-property; a shard that omits a heading counts as having read nothing and is re-dispatched.
+`properties_checked` declares that every listed file was assessed against every property; a shard
+that omits a heading counts as having read nothing and is re-dispatched. The declaration is not a
+substitute for findings and concrete searches.
 
 Rules for findings:
 
@@ -73,7 +78,7 @@ artifact is the deliverable; the reply is only a summary.
 
 {{PROPERTIES}}
 
-## Canonical vocabulary
+## Seed vocabulary
 
 {{VOCABULARY}}
 

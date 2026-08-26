@@ -41,10 +41,11 @@ rules; do not add prose before or after the block.
 
   A read-only audit of how easily coding agents can work in {repository}.
 
-  I will first learn the repository's vocabulary from its README,
-  documentation, commands, filenames, and public code. Then I will check
-  whether searching those terms leads clearly to the implementation, where it
-  is used, the rules it follows, and its tests.
+  I will seed the repository's vocabulary from its README, documentation,
+  commands, filenames, and public code. As the readers inspect the code, they
+  will add internal concepts and alternate spellings those surfaces do not
+  reveal. Then I will check whether every term leads clearly to its
+  implementation, usage, rules, and tests.
 
 ──────────────────────────────────────────────────────────────────────────────
   HOW THE AUDIT WORKS
@@ -117,11 +118,13 @@ called `gen/`, maintained scripts under `build/`) is a coverage hole, so rerun w
 `--override PREFIX=CLASS` until every exclusion is truthful. Post the class table and shard count
 as the first progress update.
 
-## 2. Vocabulary
+## 2. Seed vocabulary
 
 From the README, agent guidance, directory names, and exported type names, write
-`W/vocabulary.json` with the canonical concepts and every spelling in use. Shards receive it, so
-all readers propose the same names.
+`W/vocabulary.json` with the initial canonical concepts and every spelling already visible. Give
+each concept a `documented` proof path when documentation or agent guidance names it, otherwise
+`null`; start `rejected` as an empty list. Shards receive this seed, so all readers begin with the
+same names. It is a starting population, not the boundary of the audit.
 
 ## 3. Read every file
 
@@ -139,8 +142,9 @@ pass it verbatim, including the embedded rubric.
 After each batch run `audit.py verify --work W`. It reconciles every artifact against its
 assignment, counts a shard that did not declare every rubric heading in `properties_checked` as
 having read nothing, drops findings whose evidence is not at `path:line` (two lines of slack) and
-duplicates of an already-accepted finding, assigns stable finding IDs, and prints one `coverage:`
-line: post it as the progress update. Dispatch every `S-NNr` shard it prints; a file that is
+exact duplicates with the same property, path, line, and evidence, assigns stable finding IDs, and
+prints one `coverage:` line: post it as the progress update. Dispatch every `S-NNr` shard it
+prints; a file that is
 skipped twice becomes `uncovered`, a ledger state the report shows in full. Repeat until no shard
 is pending. The audit is exhaustive only at zero uncovered files: read each uncovered file
 yourself, complete its `S-NNr` artifact as the sequential path would (the file in `files_read`,
@@ -150,16 +154,29 @@ result is reported as an incomplete audit, never as a whole-repository one.
 
 ## 4. Cross-file pass
 
-With `W/ledger.json` in hand, resolve every `cross_shard_leads` and `vocabulary_additions` entry
-with `git grep`, and check what shards cannot see: the same definition in two files, import
-renames, test-to-source mirroring, whether each excluded directory's boundary is recorded in the
-agent guidance, and whether the repository records its search conventions at all. Write your own
-findings to `W/shards/main.json` in the shard artifact shape.
+With `W/ledger.json` in hand, investigate every `cross_shard_leads` entry and close every
+`vocabulary_additions` entry. Each discovered concept and spelling must become a concept or
+spelling in `W/vocabulary.json`, or appear under `rejected` with the discovered spellings and a
+one-line reason. Nothing readers discover may disappear silently.
 
-Then run the search trials: for every concept in the vocabulary, search as a fresh agent would and
-record in `vocabulary.json` the path that proves each surface was reached (owner, production
-wiring, contract, tests, intentional absence), `null` when it was not, `"n/a"` when it does not
-apply. Rerun `audit.py verify --work W` so `main.json` findings get IDs.
+Check what shards cannot see: the same definition in two files, import renames, test-to-source
+mirroring, whether each excluded directory's boundary is recorded in the agent guidance, and
+whether the repository records its search conventions at all. Write your own findings to
+`W/shards/main.json` in the shard artifact shape. An undocumented internal concept that a product
+term cannot reach is evidence for a repository-memory or naming finding, not a reason to omit the
+concept.
+
+Run search trials over the reconciled vocabulary, including internal concepts. Search each spelling
+case-insensitively as a fixed substring so `organization` reaches `organizationId` and
+`OrganizationRepository`. Record all five `reach` keys: a proof path for a reached owner,
+production wiring, contract, tests, or intentional absence; `null` when the trial missed; and
+`"n/a"` only when that surface genuinely does not apply. Each proof must contain a spelling in its
+path or at the recorded line. File a finding for every `null` result.
+
+Rerun `audit.py verify --work W` so `main.json` findings get stable IDs, then add the relevant
+accepted IDs to each concept's `findings` list. `audit.py measure` withholds the score when an
+addition is unresolved, a trial is incomplete, a proof does not contain a spelling, or a miss has
+no accepted finding.
 
 ## 5. Packets and narrative
 
@@ -181,12 +198,13 @@ audit.py measure --work W
 audit.py render --work W --out W/audit.md
 ```
 
-`measure` counts every symbol's blast radius and every concept's hits with `git grep`, checks
+`measure` counts every symbol's blast radius and every concept's hits across the inventory, checks
 proposed names for collisions, validates packets (unique IDs, argv accept checks), checks the
 property evidence and theme coverage, and orders the packets; it recomputes its problems on every
-run. `render` writes the detailed Markdown report: an opening verdict, a deterministic score,
-plain-language severity definitions, 7-bit ASCII maps, full evidence cards for every severity,
-packets, handoff, and coverage ledger.
+run. `render` writes the detailed Markdown report with the same fixed GREP wordmark, audit title,
+and purpose line as the introduction, followed by an opening verdict, a deterministic score,
+plain-language severity definitions, ASCII maps, full evidence cards for every severity, packets,
+handoff, and coverage ledger.
 The score averages the worst accepted severity per applicable rubric property: clean `1.00`, LOW
 `0.75`, MED `0.50`, HIGH `0.00`, rounded to the nearest integer. Multiple findings on one property
 do not stack; the finding counts show volume. Incomplete coverage, reconciliation problems,
