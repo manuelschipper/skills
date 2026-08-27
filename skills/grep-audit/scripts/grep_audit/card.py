@@ -1,84 +1,11 @@
-"""Branded audit introduction and compact human-facing result card."""
+"""Compact human-facing result card."""
 
 import textwrap
 from collections import Counter
 from pathlib import Path
 
-from .common import CARD_WIDTH, GREP_WORDMARK, REACH_SURFACES, plural, require_artifact
+from .common import CARD_WIDTH, REACH_SURFACES, plural, require_artifact
 from .render import reach_totals
-
-
-def cmd_scope(args):
-    """Print the deterministic scope question used only when the request is ambiguous."""
-    repository = Path(args.repo).resolve().name
-    lines = [
-        "  GREP · CHOOSE THE AUDIT",
-        f"  {repository}",
-        "",
-        "  1  WHOLE REPOSITORY",
-        "     Read every maintained project file and assess the codebase as a whole.",
-        "",
-        "  2  GIT DIFF",
-        "     Audit every committed change from an explicit base to the checked-out",
-        "     HEAD. Pull requests are one kind of Git diff.",
-        "",
-        "  Which should I audit?",
-        "  For a Git diff, include the base ref—for example: origin/main.",
-    ]
-    print("\n".join(lines))
-
-
-def cmd_intro(args):
-    """Print the deterministic audit introduction with one delivery ending."""
-    repository = Path(args.repo).resolve().name
-    target = f"the change {args.base}..HEAD in {repository}" if args.base else repository
-    lines = [
-        GREP_WORDMARK,
-        "",
-        open_paragraph(f"A read-only audit of how easily coding agents can work in {target}."),
-        "",
-        "  I will seed the repository's vocabulary from its README, documentation,",
-        "  commands, filenames, and public code. As the readers inspect the code, they",
-        "  will add internal concepts and alternate spellings those surfaces do not",
-        "  reveal. Then I will check whether every term leads clearly to its",
-        "  implementation, usage, rules, and tests.",
-        "",
-        "──────────────────────────────────────────────────────────────────────────────",
-        "  HOW THE AUDIT WORKS",
-        "",
-        *(
-            [open_paragraph(
-                "I will read every changed source, test, configuration, script, schema, and documentation "
-                "file in full and search the unchanged repository as context for what the change reaches. "
-                "Generated and third-party material is identified separately."
-            )]
-            if args.base else [
-                "  I will inspect the source, tests, configuration, scripts, schemas, and",
-                "  documentation maintained by the project. Generated and third-party material",
-                "  is identified separately.",
-            ]
-        ),
-        "",
-        "  If this environment supports them, subagents will divide the reading.",
-        "  Nothing in the repository will be modified. A deep audit may take a while.",
-        "",
-        "──────────────────────────────────────────────────────────────────────────────",
-        "  WHAT YOU WILL GET",
-        "",
-        "  A visual health score, the most important improvements in plain language,",
-        "  and a detailed Markdown report with the evidence and work packets a coding",
-        "  agent needs to implement them.",
-        "",
-        "──────────────────────────────────────────────────────────────────────────────",
-    ]
-    if args.destination:
-        lines.extend(["  REPORT DESTINATION", "", f"  {args.destination}"])
-    elif args.chat_only:
-        lines.extend(["  DELIVERY", "", "  Chat only · nothing will be stored"])
-    else:
-        lines.extend(["  ONE QUESTION BEFORE I START", "", "  Where should I store the detailed Markdown audit?"])
-    print("\n".join(lines))
-
 
 def open_field(label, value, label_width=15):
     prefix = "  " + f"{label:{label_width}} "

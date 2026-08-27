@@ -12,53 +12,69 @@ enumerated, assigned, read in full, and reconciled, and every number in the repo
 file on disk. It is deliberately slow.
 
 `scripts/audit.py` (git and Python 3 only) does the mechanical half: enumerate, shard, reconcile,
-measure, render, and format the chat briefing. You do the judging. Run it by absolute path from
-this skill's directory (`${CLAUDE_SKILL_DIR}/scripts/audit.py` in Claude Code). Artifact contracts
-are in [references/artifacts.md](references/artifacts.md).
+measure, render, and format the final chat briefing. You do the judging. Run it by absolute path
+from this skill's directory (`${CLAUDE_SKILL_DIR}/scripts/audit.py` in Claude Code). Artifact
+contracts are in [references/artifacts.md](references/artifacts.md).
 
-## Choose the scope
+## Start in chat
 
-Use the scope already stated in the request. A Git diff means the committed change from an explicit
-base to the checked-out `HEAD`; a pull request is one example. If the user asks for a diff, change,
-or pull request without naming its base, ask only for the base ref. Never infer one.
+Before any tool call or repository inspection, resolve what the request and applicable instructions
+already state:
 
-When the request states neither whole-repository nor Git-diff scope, run this command, return its
-output in a fenced `text` block without surrounding prose, and wait for the answer:
+- Scope is either the whole repository or one committed Git diff ending at the checked-out `HEAD`.
+  A pull request is one kind of Git diff. A diff needs an explicit base ref; never infer one.
+- Report delivery is chat-only when an applicable instruction says not to store; it is the named
+  destination when the user or environment instructions identify one; otherwise it is unresolved.
+
+Write one fenced `text` block yourself from the template below. Do not call `audit.py` to introduce
+the audit, and do not repeat the card outside the fence. Replace `{repository}` with the repository
+basename. Under each numbered item, show the resolved value when it is known; otherwise retain the
+question. If either item remains unresolved, wait for one reply that answers every unresolved item.
+If both are resolved, continue after printing the card.
 
 ```text
-audit.py scope --repo .
+                        ██████  ██████  ███████ ██████
+                       ██       ██   ██ ██      ██   ██
+                       ██  ███  ██████  █████   ██████
+                       ██   ██  ██   ██ ██      ██
+                        ██████  ██   ██ ███████ ██
+
+                              GREPPABILITY AUDIT
+
+  A read-only audit of how easily coding agents can understand and safely
+  change {repository}.
+
+  I will read every maintained file in scope and trace its domain and internal
+  concepts to their owners, production wiring, contracts, and tests. If
+  available, subagents will divide the reading. Nothing in the repository
+  will be modified. A deep audit may take a while.
+
+──────────────────────────────────────────────────────────────────────────────
+  WHAT YOU WILL GET
+
+  A visual health score, clear recommendations, and a detailed Markdown report
+  with the evidence and work packets you can give to coding agents.
+
+──────────────────────────────────────────────────────────────────────────────
+  TWO QUESTIONS BEFORE I START
+
+  1  AUDIT SCOPE
+     What should I audit: the whole repository or a committed Git diff?
+     For a diff, include the base ref—for example: origin/main.
+
+  2  REPORT DESTINATION
+     Where should I store the detailed Markdown audit?
 ```
 
-For a Git diff, `--base BASE` goes on the `intro` and `inventory` commands below and the audited
-range is `merge-base(BASE, HEAD)..HEAD`. Before step 1 read
+Do not expose how a destination was or was not discovered, ask about formats, or ask the user to
+make method choices. Never inspect the repository to guess, derive, or create a store. Nothing is
+written into the audited repository.
+
+For a Git diff, `--base BASE` goes on `inventory` below and the audited range is
+`merge-base(BASE, HEAD)..HEAD`. Before step 1 read
 [references/change-range.md](references/change-range.md): it owns what the script stops for, how
 unchanged files serve as context, how findings are scoped, and the narrower claim the report makes.
 Everything else in this file applies to both scopes.
-
-## Introduce the audit
-
-Settle the report delivery mode from existing instructions, in this precedence:
-
-- Any applicable instruction, from the user, the environment, or the runtime, says not to store:
-  use the chat-only ending below.
-- The user named a destination, or the environment instructions name a system of record for
-  reports: use the known-destination ending below.
-- Otherwise use the question ending below.
-
-Run exactly one command and return its output in a fenced `text` block without surrounding prose:
-
-```text
-audit.py intro --repo . --question
-audit.py intro --repo . --destination /absolute/report/path.md
-audit.py intro --repo . --chat-only
-```
-
-The script owns the wordmark, wording, width, repository-basename display, and ending. With
-`--question`, wait for the answer before continuing.
-
-Do not expose how a destination was or was not discovered, ask about formats, or ask the user to
-make method choices. Never guess, derive, or create a store. Nothing is written into the audited
-repository.
 
 ## Before reading any code
 

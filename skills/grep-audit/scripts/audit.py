@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Mechanical grep-audit pipeline: scope, intro, inventory, shard-prompt, verify, trial, measure, render, card."""
+"""Mechanical grep-audit pipeline: inventory, shard-prompt, verify, trial, measure, render, card."""
 
 import argparse
 
-from grep_audit.card import cmd_card, cmd_intro, cmd_scope
+from grep_audit.card import cmd_card
 from grep_audit.common import (
     DEFAULT_SHARD_LINES,
     DIMENSIONS,
@@ -24,19 +24,6 @@ __all__ = [
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     subcommands = parser.add_subparsers(dest="command", required=True)
-
-    parser_scope = subcommands.add_parser("scope", help="ask whether to audit the repository or a Git diff")
-    parser_scope.add_argument("--repo", required=True, help="repository name or path; only its basename is shown")
-    parser_scope.set_defaults(func=cmd_scope)
-
-    parser_intro = subcommands.add_parser("intro", help="print the branded introduction with one delivery ending")
-    parser_intro.add_argument("--repo", required=True, help="repository name or path; only its basename is shown")
-    parser_intro.add_argument("--base", help="announce a change-range audit of merge-base(BASE, HEAD)..HEAD")
-    ending = parser_intro.add_mutually_exclusive_group()
-    ending.add_argument("--destination", help="known detailed-report destination")
-    ending.add_argument("--chat-only", action="store_true", help="state that nothing will be stored")
-    ending.add_argument("--question", action="store_true", help="ask where to store the report (default)")
-    parser_intro.set_defaults(func=cmd_intro)
 
     parser_inventory = subcommands.add_parser(
         "inventory", help="enumerate, classify, and shard every file in the repository"

@@ -99,31 +99,6 @@ class AuditFlow(unittest.TestCase):
         small_loads = [shard["lines"] for shard in shards if "huge.py" not in shard["files"]]
         self.assertLessEqual(max(small_loads) - min(small_loads), 100)
 
-    def test_intro_preserves_dynamic_values_and_layout(self):
-        repository = "intro-repo-7"
-        destination = "/tmp/intro-contract-audit.md"
-        out = run("intro", "--repo", f"/very/long/path/{repository}", "--destination", destination)
-        lines = out.splitlines()
-        self.assertEqual(out.count(repository), 1)
-        self.assertEqual(out.count(destination), 1)
-        self.assertEqual(lines[-1].strip(), destination)
-        self.assertLessEqual(max(map(len, lines)), 78)
-        base = "origin/release-2026.08"
-        ranged = run("intro", "--repo", f"/very/long/path/{repository}", "--base", base, "--chat-only")
-        self.assertEqual(ranged.count(f"{base}..HEAD"), 1)
-        self.assertEqual(ranged.count(repository), 1)
-        self.assertLessEqual(max(map(len, ranged.splitlines())), 78)
-        self.assertNotEqual(ranged, out)
-
-    def test_scope_question_presents_two_bounded_choices(self):
-        repository = "scope-repo-11"
-        out = run("scope", "--repo", f"/work/{repository}")
-        lines = out.splitlines()
-        choices = [line for line in lines if line.startswith(("  1  ", "  2  "))]
-        self.assertEqual(len(choices), 2)
-        self.assertEqual(out.count(repository), 1)
-        self.assertLessEqual(max(map(len, lines)), 78)
-
     def test_whole_repository_ignores_finding_scope(self):
         inventory = self.inventory("--shard-lines", "100000")
         self.assertIsNone(inventory["range"])
