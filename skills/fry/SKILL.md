@@ -1,10 +1,10 @@
 ---
-name: plain
+name: fry
 description: Present the current answer in a brief, plain, visual form that is easy to scan.
 disable-model-invocation: true
 ---
 
-# Plain
+# Fry
 
 Complete the underlying task normally. Present its entire answer in the current turn.
 
