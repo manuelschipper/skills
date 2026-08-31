@@ -9,6 +9,18 @@ disable-model-invocation: true
 The user's brain is fried. Turn whatever dense material is at hand into a paced
 conversation: one coherent item, one active thread, one explicit response at a time.
 
+## Record
+
+Before mapping or serving, establish how to handle decisions. When the user has already
+chosen conversation-only or named a durable destination, follow that instruction.
+Otherwise, identify the appropriate system of record when the environment makes one clear
+and ask one brief question: keep decisions in the conversation only, or record them there?
+When no system is clear, ask whether to record them durably and, if so, where. Stop until
+the user answers.
+
+Record decisions only when the user explicitly opts in, and only in the destination they
+approve.
+
 ## Map
 
 Before serving the first item, read every source in full and map it into an ordered
@@ -43,9 +55,9 @@ one line; never advance on a guess. When advancing, state the recorded response 
 first. A response may resolve, split, or moot later items: update the map and say so when
 N changes.
 
-Store durable responses and the final readback in whatever system of record is correct in
-this environment when writes there are already authorized; otherwise keep them in context.
-A recommendation is advice, not permission to implement it.
+Keep responses in context throughout. When the user opted into durable recording, write
+resolved responses and the final readback to the approved system of record. Approval to
+record decisions is not permission to implement a recommendation.
 
 ## Close
 
