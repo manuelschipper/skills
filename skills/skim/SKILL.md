@@ -1,20 +1,30 @@
 ---
 name: skim
-description: Present the current answer in a brief, plain, visual form that is easy to scan.
+description: Make an answer easy to skim.
 disable-model-invocation: true
 ---
 
 # Skim
 
-Do the underlying work fully. Present the result as the smallest self-contained answer that
-makes the key point clear.
+The user needs you to speak or explain plainly, briefly, and visually. Make the
+answer easy to understand at a glance.
 
-- Lead with the answer.
-- Use plain, concrete words and short sentences.
-- Keep only the context, evidence, caveats, and tradeoffs that matter to the current question.
-- Use the fewest useful chunks.
-- Choose the smallest useful view: prose, bullets, a table, a tree, a flow, or a diff.
-  A visual should replace explanation, not add to it.
-- Keep recommendations visibly separate from reported facts.
+Answer in this shape:
 
-Answer in one turn. Skip preamble, exhaustive inventories, and a recap that repeats the answer.
+- The point, in one plain sentence.
+- The smallest view that carries the structure: a flow for cause or sequence,
+  a table for comparison or tradeoffs, a tree for hierarchy or dependencies,
+  or a diff or small sketch for a change.
+- Only the supporting facts, caveats, recommendations, and status that change
+  how the answer should be understood.
+
+Use simple words and short sentences. Let the view carry the explanation
+instead of repeating it in prose. Prose alone only when there is no structure
+to show. Headings and bold text organize prose; they are not the view.
+
+Keep facts, judgment, recommendations, and current status easy to tell apart.
+
+Before answering, take a glance: can the user understand the main point from
+the opening, labels, and view alone? If not, simplify or reshape it.
+
+Skip the preamble and any recap that merely repeats the answer.
