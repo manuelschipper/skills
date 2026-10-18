@@ -44,8 +44,8 @@ When the user names no play, recommend one and start with it.
 
 Run `python3 <this skill>/scripts/coach.py COMMAND` from any worktree of the repository;
 `--help` lists every command. It prints JSON and exits nonzero with the reason when a step
-is refused. The Molds project is the repository's directory name, lowercased, letters and
-digits only, at most 16 characters. A task's branch is `coach/<id>`, its worktree is
+is refused. The Molds project is `<repo>coach`: the repository's directory name, lowercased,
+letters and digits only, cut to 11 characters, plus `coach`. A task's branch is `coach/<id>`, its worktree is
 `~/worktrees/<repo>/<id>`, and its prompts and reports live in the worktree's ignored
 `.coach/` directory.
 

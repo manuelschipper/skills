@@ -73,9 +73,9 @@ def common_dir():
 
 
 def project():
-    """The repository name reduced to what Molds accepts: ^[a-z][a-z0-9]{0,15}$."""
+    """`<repo>coach`, with the repository name cut so it fits Molds: ^[a-z][a-z0-9]{0,15}$."""
     repo = common_dir().parent.name
-    name = re.sub(r"[^a-z0-9]", "", repo.lower())[:16]
+    name = re.sub(r"[^a-z0-9]", "", repo.lower())[:11] + "coach"
     if not re.fullmatch(r"[a-z][a-z0-9]*", name):
         raise Fail(f"repository name {repo!r} gives no valid Molds project name")
     return name
